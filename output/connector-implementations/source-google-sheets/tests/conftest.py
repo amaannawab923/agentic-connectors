@@ -147,6 +147,8 @@ def mock_credentials():
     mock_creds.expired = False
     mock_creds.token = "mock-access-token"
     mock_creds.service_account_email = "test@test-project.iam.gserviceaccount.com"
+    # Required by Google API client to match universe domain
+    mock_creds.universe_domain = "googleapis.com"
     return mock_creds
 
 

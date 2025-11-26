@@ -192,19 +192,23 @@ class TestConnectionCheck:
     def test_check_connection_auth_failure(self, mock_create_auth, mock_client_class,
                                             valid_service_account_config):
         """Test connection check with authentication failure."""
+        # Import AuthenticationError from the same module the connector uses
+        from src.auth import AuthenticationError as SrcAuthenticationError
+
         mock_auth = MagicMock()
         mock_create_auth.return_value = mock_auth
-        
+
         mock_client = MagicMock()
-        mock_client.get_spreadsheet_metadata.side_effect = AuthenticationError(
+        # Use the AuthenticationError from src.auth so the connector catches it properly
+        mock_client.get_spreadsheet_metadata.side_effect = SrcAuthenticationError(
             "Invalid credentials",
             details={"error": "test"}
         )
         mock_client_class.return_value = mock_client
-        
+
         connector = GoogleSheetsConnector(valid_service_account_config)
         result = connector.check_connection()
-        
+
         assert result.status == ConnectorStatus.FAILED
         assert "Authentication failed" in result.message
 

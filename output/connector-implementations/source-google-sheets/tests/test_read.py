@@ -199,137 +199,140 @@ class TestConnectorRead:
 
     def test_read_single_stream(self, valid_service_account_config):
         """Test reading a single stream."""
-        with patch('connector.create_authenticator') as mock_create_auth:
+        with patch('connector.create_authenticator') as mock_create_auth, \
+             patch('connector.GoogleSheetsClient') as mock_client_class:
             mock_auth = MagicMock()
             mock_create_auth.return_value = mock_auth
 
-            with patch.object(GoogleSheetsClient, 'get_sheet_names') as mock_names:
-                mock_names.return_value = ["Sheet1"]
+            # Setup mock client instance
+            mock_client = MagicMock()
+            mock_client.get_sheet_names.return_value = ["Sheet1"]
+            mock_client.get_headers.return_value = ["Name"]
+            mock_client.batch_size = 200
+            mock_client.get_rows_batch.side_effect = [
+                [["John"], ["Jane"]],
+                []
+            ]
+            mock_client_class.return_value = mock_client
 
-                with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
-                    mock_headers.return_value = ["Name"]
+            connector = GoogleSheetsConnector(valid_service_account_config)
 
-                    with patch.object(GoogleSheetsClient, 'get_rows_batch') as mock_rows:
-                        mock_rows.side_effect = [
-                            [["John"], ["Jane"]],
-                            []
-                        ]
+            # Use read_stream generator
+            records = []
+            gen = connector.read_stream("Sheet1")
+            try:
+                while True:
+                    record = next(gen)
+                    records.append(record)
+            except StopIteration:
+                pass
 
-                        connector = GoogleSheetsConnector(valid_service_account_config)
-
-                        # Use read_stream generator
-                        records = []
-                        gen = connector.read_stream("Sheet1")
-                        try:
-                            while True:
-                                record = next(gen)
-                                records.append(record)
-                        except StopIteration:
-                            pass
-
-                        assert len(records) == 2
+            assert len(records) == 2
 
     def test_read_all_streams(self, valid_service_account_config):
         """Test reading all streams."""
-        with patch('connector.create_authenticator') as mock_create_auth:
+        with patch('connector.create_authenticator') as mock_create_auth, \
+             patch('connector.GoogleSheetsClient') as mock_client_class:
             mock_auth = MagicMock()
             mock_create_auth.return_value = mock_auth
 
-            with patch.object(GoogleSheetsClient, 'get_sheet_names') as mock_names:
-                mock_names.return_value = ["Sheet1", "Sheet2"]
+            # Setup mock client instance
+            mock_client = MagicMock()
+            mock_client.get_sheet_names.return_value = ["Sheet1", "Sheet2"]
+            mock_client.get_headers.return_value = ["Name"]
+            mock_client.batch_size = 200
+            # Both sheets have same data for simplicity
+            mock_client.get_rows_batch.side_effect = [
+                [["John"]],  # Sheet1 data
+                [],          # Sheet1 end
+                [["Jane"]],  # Sheet2 data
+                []           # Sheet2 end
+            ]
+            mock_client_class.return_value = mock_client
 
-                with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
-                    mock_headers.return_value = ["Name"]
+            connector = GoogleSheetsConnector(valid_service_account_config)
+            records = list(connector.read())
 
-                    with patch.object(GoogleSheetsClient, 'get_rows_batch') as mock_rows:
-                        # Both sheets have same data for simplicity
-                        mock_rows.side_effect = [
-                            [["John"]],  # Sheet1 data
-                            [],          # Sheet1 end
-                            [["Jane"]],  # Sheet2 data
-                            []           # Sheet2 end
-                        ]
-
-                        connector = GoogleSheetsConnector(valid_service_account_config)
-                        records = list(connector.read())
-
-                        # Should have records from both sheets
-                        assert len(records) >= 1
+            # Should have records from both sheets
+            assert len(records) >= 1
 
     def test_read_with_metadata(self, valid_service_account_config):
         """Test that records include metadata fields."""
-        with patch('connector.create_authenticator') as mock_create_auth:
+        with patch('connector.create_authenticator') as mock_create_auth, \
+             patch('connector.GoogleSheetsClient') as mock_client_class:
             mock_auth = MagicMock()
             mock_create_auth.return_value = mock_auth
 
-            with patch.object(GoogleSheetsClient, 'get_sheet_names') as mock_names:
-                mock_names.return_value = ["Sheet1"]
+            # Setup mock client instance
+            mock_client = MagicMock()
+            mock_client.get_sheet_names.return_value = ["Sheet1"]
+            mock_client.get_headers.return_value = ["Name"]
+            mock_client.batch_size = 200
+            mock_client.get_rows_batch.side_effect = [
+                [["John"]],
+                []
+            ]
+            mock_client_class.return_value = mock_client
 
-                with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
-                    mock_headers.return_value = ["Name"]
+            connector = GoogleSheetsConnector(valid_service_account_config)
+            records = list(connector.read())
 
-                    with patch.object(GoogleSheetsClient, 'get_rows_batch') as mock_rows:
-                        mock_rows.side_effect = [
-                            [["John"]],
-                            []
-                        ]
-
-                        connector = GoogleSheetsConnector(valid_service_account_config)
-                        records = list(connector.read())
-
-                        if records:
-                            record = records[0]
-                            # Should have stream metadata
-                            assert "_stream" in record
-                            assert "_extracted_at" in record
+            if records:
+                record = records[0]
+                # Should have stream metadata
+                assert "_stream" in record
+                assert "_extracted_at" in record
 
     def test_read_selected_streams(self, valid_service_account_config):
         """Test reading only selected streams."""
-        with patch('connector.create_authenticator') as mock_create_auth:
+        with patch('connector.create_authenticator') as mock_create_auth, \
+             patch('connector.GoogleSheetsClient') as mock_client_class:
             mock_auth = MagicMock()
             mock_create_auth.return_value = mock_auth
 
-            with patch.object(GoogleSheetsClient, 'get_sheet_names') as mock_names:
-                mock_names.return_value = ["Sheet1", "Sheet2", "Sheet3"]
+            # Setup mock client instance
+            mock_client = MagicMock()
+            mock_client.get_sheet_names.return_value = ["Sheet1", "Sheet2", "Sheet3"]
+            mock_client.get_headers.return_value = ["Name"]
+            mock_client.batch_size = 200
+            mock_client.get_rows_batch.side_effect = [
+                [["Data"]],
+                []
+            ]
+            mock_client_class.return_value = mock_client
 
-                with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
-                    mock_headers.return_value = ["Name"]
+            connector = GoogleSheetsConnector(valid_service_account_config)
+            records = list(connector.read(streams=["Sheet1"]))
 
-                    with patch.object(GoogleSheetsClient, 'get_rows_batch') as mock_rows:
-                        mock_rows.side_effect = [
-                            [["Data"]],
-                            []
-                        ]
-
-                        connector = GoogleSheetsConnector(valid_service_account_config)
-                        records = list(connector.read(streams=["Sheet1"]))
-
-                        # Should only read from Sheet1
-                        if records:
-                            assert records[0]["_stream"] == "Sheet1"
+            # Should only read from Sheet1
+            if records:
+                assert records[0]["_stream"] == "Sheet1"
 
     def test_read_nonexistent_stream(self, valid_service_account_config):
         """Test reading non-existent stream."""
-        with patch('connector.create_authenticator') as mock_create_auth:
+        with patch('connector.create_authenticator') as mock_create_auth, \
+             patch('connector.GoogleSheetsClient') as mock_client_class:
             mock_auth = MagicMock()
             mock_create_auth.return_value = mock_auth
 
-            with patch.object(GoogleSheetsClient, 'get_sheet_names') as mock_names:
-                mock_names.return_value = ["Sheet1"]
+            # Setup mock client instance
+            mock_client = MagicMock()
+            mock_client.get_sheet_names.return_value = ["Sheet1"]
+            mock_client_class.return_value = mock_client
 
-                connector = GoogleSheetsConnector(valid_service_account_config)
+            connector = GoogleSheetsConnector(valid_service_account_config)
 
-                gen = connector.read_stream("NonExistentSheet")
-                try:
-                    # Try to get records
-                    records = []
-                    while True:
-                        records.append(next(gen))
-                except StopIteration as e:
-                    # Should return a SyncResult with failure status
-                    result = e.value
-                    if result is not None:
-                        assert result.status == ConnectorStatus.FAILED
+            gen = connector.read_stream("NonExistentSheet")
+            try:
+                # Try to get records
+                records = []
+                while True:
+                    records.append(next(gen))
+            except StopIteration as e:
+                # Should return a SyncResult with failure status
+                result = e.value
+                if result is not None:
+                    assert result.status == ConnectorStatus.FAILED
 
 
 class TestUtils:
