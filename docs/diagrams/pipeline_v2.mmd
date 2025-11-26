@@ -1,0 +1,32 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	research(research)
+	generator(generator)
+	tester(tester)
+	test_reviewer(test_reviewer)
+	reviewer(reviewer)
+	publisher(publisher)
+	failed(failed)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> research;
+	generator --> tester;
+	research --> generator;
+	reviewer -.-> failed;
+	reviewer -.-> generator;
+	reviewer -.-> publisher;
+	reviewer -.-> research;
+	test_reviewer -.-> failed;
+	test_reviewer -.-> generator;
+	test_reviewer -.-> reviewer;
+	test_reviewer -.-> tester;
+	tester --> test_reviewer;
+	failed --> __end__;
+	publisher --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
