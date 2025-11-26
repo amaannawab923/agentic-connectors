@@ -60,6 +60,7 @@ class OrchestratorSettings(BaseSettings):
     class Config:
         env_prefix = "ORCHESTRATOR_"
         env_file = ".env"
+        extra = "ignore"  # Ignore extra fields from .env that don't belong to this class
 
 
 settings = OrchestratorSettings()

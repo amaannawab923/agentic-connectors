@@ -62,6 +62,51 @@ Your task is to create comprehensive tests that will CATCH BUGS in the generated
 Find bugs. Break things. The connector was auto-generated and likely has issues.
 Your job is to discover what's wrong so it can be fixed.
 
+## 🚨 TURN BUDGET RULES - READ THIS FIRST 🚨
+
+You have a MAXIMUM of 40 turns to complete testing. Use them wisely:
+
+**Turns 1-5: Quick Validation (REQUIRED)**
+- Syntax validation (py_compile all source files)
+- Import tests (verify all modules load)
+- Config tests (Pydantic model validation)
+- MUST complete within 5 turns
+
+**Turns 6-20: Progressive Mocking Strategy (MAX 15 turns)**
+Try each mocking level for MAX 5 turns. If unsuccessful, ESCALATE to next level:
+
+**Level 1 (Turns 6-10)**: SDK-Level Mocking
+- Mock at `googleapiclient.discovery.build` / `boto3.client` level
+- Mock service methods directly (e.g., `service.spreadsheets().get().execute()`)
+- If 2 failed attempts → ESCALATE to Level 2
+
+**Level 2 (Turns 11-15)**: Library Test Utilities
+- Use library-provided mocking: `HttpMock`, `moto`, `responses`
+- Search for "{library} official testing utilities"
+- If 2 failed attempts → ESCALATE to Level 3
+
+**Level 3 (Turns 16-20)**: Connector Client Mocking
+- Mock at connector's client class level (e.g., `mock GoogleSheetsClient.get_spreadsheet()`)
+- Bypass SDK complexity entirely
+- This ALWAYS works - use simple Mock/MagicMock
+
+**Turns 21-25: Test Execution & Result Writing**
+- Run final test suite
+- Parse results
+- Write test_results.json
+
+**Turns 26-40: EMERGENCY BUFFER**
+- Only use if absolutely necessary
+- After turn 30, STOP trying new approaches
+- Write test_results.json with what you have
+
+**CRITICAL RULES:**
+1. After 2 failed mocking attempts at any level, IMMEDIATELY escalate to next level
+2. After turn 20, STOP creating new mocks - use what you have
+3. After turn 30, STOP ALL work and write test_results.json
+4. DO NOT spend >5 turns on any single mocking approach
+5. Simple tests (syntax, imports, config) are MORE valuable than perfect API mocks
+
 ## ⚠️ CRITICAL: ALWAYS WRITE test_results.json AT THE END ⚠️
 
 No matter what happens (tests pass OR fail), you MUST write `tests/test_results.json` as your FINAL action.
@@ -242,6 +287,66 @@ def mock_sheets_api(mock_spreadsheet_metadata, mock_values_response):
         yield {'service': mock_service, 'credentials': mock_creds, 'build': mock_build}
 ```
 
+##### Level 3: Connector Client Mock (FALLBACK - ALWAYS WORKS):
+```python
+from unittest.mock import patch, MagicMock
+
+@pytest.fixture
+def mock_google_sheets_client():
+    """
+    Mock at the connector's client level - simpler and always reliable.
+
+    This bypasses all SDK complexity and mocks the connector's own client class.
+    Use this when SDK-level mocking becomes too complex.
+    """
+    with patch('src.client.GoogleSheetsClient') as MockClient:
+        # Create mock client instance
+        mock_client = MagicMock()
+        MockClient.return_value = mock_client
+
+        # Mock client methods with simple return values
+        mock_client.check_connection.return_value = {
+            "success": True,
+            "spreadsheet_name": "Test Sheet",
+            "sheet_names": ["Sheet1", "Sheet2"]
+        }
+
+        mock_client.get_spreadsheet_metadata.return_value = {
+            "spreadsheetId": "test-id-123",
+            "properties": {"title": "Test Sheet"},
+            "sheets": [
+                {"properties": {"title": "Sheet1", "sheetId": 0}},
+                {"properties": {"title": "Sheet2", "sheetId": 1}}
+            ]
+        }
+
+        mock_client.get_sheet_data.return_value = [
+            ["Name", "Email", "Age"],
+            ["Alice", "alice@example.com", "30"],
+            ["Bob", "bob@example.com", "25"]
+        ]
+
+        yield mock_client
+
+# Use it in tests:
+def test_connector_with_client_mock(mock_google_sheets_client):
+    from src.connector import GoogleSheetsConnector
+    from src.config import GoogleSheetsConfig
+
+    config = GoogleSheetsConfig(...)
+    connector = GoogleSheetsConnector(config)
+
+    # This will use the mocked client
+    result = connector.check_connection()
+    assert result["success"] is True
+```
+
+**WHEN TO USE LEVEL 3:**
+- After 2 failed attempts at SDK mocking (Level 1)
+- After 2 failed attempts at library utilities (Level 2)
+- When you're past turn 15
+- When you need tests that DEFINITELY work
+
 ##### For requests-based APIs:
 ```python
 import responses
@@ -297,26 +402,50 @@ If tests fail, recognize these common error patterns:
 After pytest completes, IMMEDIATELY use the Write tool to create `tests/test_results.json`.
 Parse the pytest output and create a detailed report.
 
-## ESCALATION PATH
+## PROGRESSIVE ESCALATION PATH (STRICT ENFORCEMENT)
 
-If your mocking approach isn't working after 2 attempts:
+**You MUST escalate after 2 failed attempts or 5 turns at any level.**
 
-1. **Level 1**: Mock at SDK/service level (recommended)
-   - Mock `build()` to return a mock service
-   - Mock service methods directly
+### Level 1 (Turns 6-10): SDK/Service Level Mocking
+**Budget**: 5 turns maximum
+**Attempts**: 2 maximum
+- Mock at `googleapiclient.discovery.build()` / `boto3.client()` level
+- Mock the full service method chain
+- **Example**: `mock_service.spreadsheets().get().execute()`
 
-2. **Level 2**: Mock the connector's client methods directly
-   - Instead of mocking Google API, mock `GoogleSheetsClient.get_spreadsheet()`
-   - This bypasses SDK complexity entirely
+**Escalate to Level 2 if:**
+- 2 test runs still have mocking errors
+- You've spent 5 turns on this level
+- Errors like "cannot unpack non-iterable Mock" persist
 
-3. **Level 3**: Use library-provided test utilities
-   - Google: `googleapiclient.http.HttpMock` or `HttpMockSequence`
-   - AWS: `moto` library or `botocore.stub.Stubber`
-   - Search for "{library} official testing utilities"
+### Level 2 (Turns 11-15): Library Test Utilities
+**Budget**: 5 turns maximum
+**Attempts**: 2 maximum
+- Use library-specific testing tools:
+  - Google: `googleapiclient.http.HttpMock`, `HttpMockSequence`
+  - AWS: `moto` library, `botocore.stub.Stubber`
+  - REST: `responses`, `httpretty`
+- Search: "{library_name} official testing utilities pytest"
 
-4. **Level 4**: Mock at the connector level
-   - Mock the entire client class
-   - Test business logic in isolation
+**Escalate to Level 3 if:**
+- Library utilities are too complex
+- 2 test runs still fail
+- You've spent 5 turns on this level
+
+### Level 3 (Turns 16-20): Connector Client Mocking [GUARANTEED TO WORK]
+**Budget**: 5 turns maximum
+**This level ALWAYS succeeds** - you're mocking your own code, not external SDKs
+- Mock at the connector's client class level
+- **Example**: `patch('src.client.GoogleSheetsClient')`
+- Mock client methods with simple return values
+- Test connector logic, not API integration
+
+**This is your safety net - use the template above!**
+
+### After Turn 20: STOP MOCKING, START FINALIZING
+- Run whatever tests you have
+- Write test_results.json
+- DO NOT try new mocking approaches
 
 ## COMMON BUGS TO LOOK FOR
 

@@ -28,12 +28,16 @@ class Settings(BaseSettings):
 
     # Claude Agent SDK Settings
     claude_model: str = Field(
-        default="claude-sonnet-4-20250514",
+        default="claude-sonnet-4-5-20250929",
         description="Claude model to use"
     )
     max_turns: int = Field(
         default=50,
         description="Maximum conversation turns per agent"
+    )
+    tester_max_turns: int = Field(
+        default=40,
+        description="Maximum turns for tester agent (reduced to prevent infinite mocking loops)"
     )
     permission_mode: str = Field(
         default="acceptEdits",
@@ -50,7 +54,7 @@ class Settings(BaseSettings):
         description="Tools allowed for generator agent"
     )
     tester_allowed_tools: List[str] = Field(
-        default=["Read", "Bash"],
+        default=["Read", "Write", "Bash", "WebSearch", "WebFetch"],
         description="Tools allowed for tester agent"
     )
     reviewer_allowed_tools: List[str] = Field(
@@ -162,8 +166,11 @@ class Settings(BaseSettings):
             "publisher": self.publisher_allowed_tools,
         }
 
+        # Use tester-specific max_turns to prevent infinite mocking loops
+        max_turns = self.tester_max_turns if agent_type == "tester" else self.max_turns
+
         return {
-            "max_turns": self.max_turns,
+            "max_turns": max_turns,
             "permission_mode": self.permission_mode,
             "allowed_tools": tool_mapping.get(agent_type, []),
         }

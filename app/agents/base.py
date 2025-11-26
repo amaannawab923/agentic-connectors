@@ -129,6 +129,7 @@ class BaseAgent(ABC):
             allowed_tools.extend(additional_tools)
 
         return ClaudeAgentOptions(
+            model=self.settings.claude_model,
             system_prompt=custom_system_prompt or self.system_prompt,
             max_turns=self._agent_options.get("max_turns", 50),
             allowed_tools=allowed_tools if allowed_tools else None,
