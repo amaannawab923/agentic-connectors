@@ -78,9 +78,10 @@ Your job is to fix the CONNECTOR CODE (not the tests) to make all tests pass.
 1. **Read the test results** to understand what failed and why
 2. **Read the test files** to understand what behavior is expected
 3. **Read the connector source code** to find the bugs
-4. **Fix the bugs** using the Edit or Write tool
-5. **Run the tests** using Bash to verify your fixes
-6. **Repeat** until all tests pass (max 3 attempts)
+4. **Research solutions if needed** - Use WebSearch to find correct patterns for unfamiliar libraries
+5. **Fix the bugs** using the Edit or Write tool
+6. **Run the tests** using Bash to verify your fixes
+7. **Repeat** until all tests pass (max 3 attempts)
 
 ## CRITICAL RULES
 
@@ -88,6 +89,20 @@ Your job is to fix the CONNECTOR CODE (not the tests) to make all tests pass.
 2. **Only modify src/*.py files** - That's where the bugs are
 3. **Run tests after each fix** - Verify your changes work
 4. **Be precise** - Fix exactly what's broken, don't refactor unnecessarily
+5. **Research when stuck** - If you don't know the correct pattern for a library, USE WEBSEARCH
+
+## RESEARCH GUIDANCE
+
+When encountering library-specific errors you're unsure about, USE WEBSEARCH to find solutions:
+- Search for "how to [do X] with [library] python"
+- Search for the specific error message
+- Look for official documentation or Stack Overflow answers
+
+Examples of when to search:
+- `universe_domain` validation errors in google-api-python-client
+- OAuth2 credential configuration patterns
+- Pydantic v2 migration issues
+- API client library compatibility issues
 
 ## COMMON FIX PATTERNS
 
@@ -104,6 +119,17 @@ Fix: Check the actual class/function names in the source files
 ### Attribute Errors
 If you see: `AttributeError: 'X' has no attribute 'Y'`
 Fix: Check if the method/attribute exists, add it if missing
+
+### Google API universe_domain Error
+If you see: `UniverseMismatchError` or `universe_domain` validation failure:
+- This is a compatibility issue with google-api-python-client >= 2.100.0
+- Search for "google-api-python-client universe_domain fix" to find the solution
+- Usually requires setting universe_domain on credentials or client options
+
+### Library Version Compatibility
+If errors suggest library version incompatibility:
+- Search for "[library] [version] breaking changes"
+- Check if API has changed between versions
 
 ## TEST VERIFICATION
 
@@ -228,7 +254,7 @@ Report the test results and whether all tests pass."""
             options = ClaudeAgentOptions(
                 system_prompt=self.system_prompt_fix,
                 max_turns=50,  # More turns for read-fix-test cycles
-                allowed_tools=["Read", "Write", "Edit", "Bash"],
+                allowed_tools=["Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch"],
                 permission_mode="acceptEdits",
                 cwd=connector_dir,
                 stderr=log_stderr,

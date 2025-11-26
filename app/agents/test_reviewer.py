@@ -90,6 +90,12 @@ You must determine WHERE the bug is:
 Choose this when:
 - Tests have syntax errors or import failures IN THE TEST FILES
 - Mocks are incorrectly configured (wrong URLs, wrong response formats)
+- **MOCK CONFIGURATION ERRORS** - This is CRITICAL to identify correctly:
+  - Mock patches applied at wrong module path (should patch where imported, not where defined)
+  - MagicMock chain not set up correctly (each method must return next mock)
+  - Mock doesn't return proper data structure (returns Mock instead of dict/list)
+  - `cannot unpack non-iterable Mock object` - THIS IS A MOCK CONFIGURATION ISSUE, NOT CODE BUG
+  - `Mock object is not callable` or similar Mock-related errors
 - Test fixtures don't match the actual connector API
 - Assertions are testing the wrong behavior
 - Tests don't follow the connector's actual interface
@@ -100,35 +106,61 @@ Examples of INVALID tests:
 - Mock for `googleapis.com` but connector uses `sheets.googleapis.com`
 - Asserting `connector.check()` but method is `connector.check_connection()`
 - RSA key not properly generated for Google APIs
+- **`@patch('google.oauth2.service_account.Credentials')` instead of `@patch('src.auth.service_account.Credentials')`**
+- **Mock chain: `mock.return_value.method.return_value` instead of proper MagicMock assignments**
+- **googleapiclient mock not returning proper service object chain**
 
 ### Decision: VALID_FAIL (Code has bugs)
 Choose this when:
 - Tests are correctly written and use the right interfaces
-- Mocks properly simulate the API
+- **Mocks are properly configured** (patch at correct location, proper return values)
 - But the CONNECTOR CODE raises errors like:
   - Pydantic validation errors (e.g., discriminator needs Literal type)
   - Import errors IN THE CONNECTOR (not test files)
   - Type errors in connector code
   - Missing method implementations
   - Logic errors in the connector
+  - Library compatibility issues (e.g., universe_domain validation) - BUT ONLY if tests properly mock the library
 
 Examples of VALID tests that reveal CODE bugs:
 - Test correctly instantiates connector but Pydantic raises `PydanticUserError`
 - Test calls `connector.check_connection()` correctly but connector raises `AttributeError`
 - Test provides valid config but connector's validation is broken
+- **Connector code doesn't handle library version changes (universe_domain, etc.) - when mocks are correct**
 
 ### Decision: VALID_PASS (All good!)
 Choose this when:
 - Tests pass with no errors
 - OR only deprecation warnings (not actual failures)
 
+## CRITICAL: MOCK CONFIGURATION ERRORS ARE TEST ISSUES
+
+**THIS IS THE MOST IMPORTANT RULE**: If you see errors like:
+- `cannot unpack non-iterable Mock object`
+- `Mock object has no attribute 'X'`
+- `'MagicMock' object is not subscriptable`
+- `TypeError: 'Mock' object is not callable`
+
+**THESE ARE ALMOST ALWAYS TEST/MOCK ISSUES, NOT CODE BUGS!**
+
+The tests are incorrectly mocking the library. Common mock mistakes:
+1. **Wrong patch path**: `@patch('library.Class')` should be `@patch('src.module.Class')` (patch where used, not where defined)
+2. **Improper mock chain**: Google APIs need `service.method1().method2().execute()` pattern
+3. **Missing return values**: Mock must return actual data, not another Mock
+4. **Missing attributes**: Mock credentials may need `universe_domain` attribute
+
+**DO NOT** classify mock configuration errors as VALID_FAIL (code bugs).
+**DO** classify them as INVALID (test issues) and route to Tester.
+
 ## ANALYSIS PROCESS
 
 1. **Read the test_results.json** - Understand what happened
 2. **Read the test files** - Check if tests are correctly written
-3. **Read the connector source** - Check if connector code is correct
-4. **Trace the error** - Follow the stack trace to find the root cause
-5. **Make your decision** - INVALID, VALID_FAIL, or VALID_PASS
+3. **Check mock configuration** - Are patches at correct paths? Are return values set up properly?
+4. **Read the connector source** - Check if connector code is correct
+5. **Trace the error** - Follow the stack trace to find the root cause
+6. **Check if error mentions "Mock"** - If yes, it's likely a test issue
+7. **Make your decision** - INVALID, VALID_FAIL, or VALID_PASS
 
 ## OUTPUT FORMAT
 
@@ -162,6 +194,8 @@ You MUST output your analysis as JSON:
 3. **Check imports carefully**: Import errors can happen in tests OR connector
 4. **Pydantic errors are usually CODE bugs**: They indicate the config model is wrong
 5. **Mock mismatches are TEST bugs**: If the mock doesn't match the real API
+6. **"Mock" in error message = likely TEST bug**: Check the mock configuration first
+7. **Patch location matters**: Must patch where the name is looked up, not where it's defined
 
 ## COMMON PATTERNS
 
@@ -196,6 +230,26 @@ You MUST output your analysis as JSON:
 - Root cause: CONNECTOR CODE (method not implemented or wrong name)
 - Decision: VALID_FAIL
 - Fix: Implement missing method or fix typo
+
+### Pattern 6: Mock Configuration Error (CRITICAL!)
+- Error: `cannot unpack non-iterable Mock object` or similar Mock errors
+- Root cause: TESTS (mock not configured correctly)
+- Decision: **INVALID** (not VALID_FAIL!)
+- Fix: Fix mock configuration in test files:
+  1. Patch at correct path: `@patch('src.module.ClassName')` not `@patch('library.ClassName')`
+  2. Set up proper mock chain for method calls
+  3. Ensure `.return_value` returns actual data, not Mock
+  4. For google APIs: `mock_service.spreadsheets.return_value.get.return_value.execute.return_value = {...}`
+
+### Pattern 7: Google API Mock Issues
+- Error: `cannot unpack non-iterable Mock object` during Google API calls
+- Root cause: TESTS (googleapiclient mock not properly configured)
+- Decision: **INVALID**
+- Fix:
+  1. Patch `src.client.build` not `googleapiclient.discovery.build`
+  2. Patch `src.auth.service_account.Credentials` not `google.oauth2.service_account.Credentials`
+  3. Set up proper mock chain for service object
+  4. Add `universe_domain` attribute to mock credentials
 """
 
     async def execute(
@@ -427,7 +481,23 @@ Start by reading the relevant files, then provide your JSON analysis.
         # Fallback: analyze response text for decision indicators
         response_lower = response.lower()
 
-        if "invalid" in response_lower and "test" in response_lower:
+        # Check for mock-related errors first (these are TEST issues, not code bugs)
+        mock_error_indicators = [
+            "cannot unpack non-iterable mock",
+            "mock object",
+            "magicmock",
+            "mock is not callable",
+            "mock has no attribute",
+            "patch at wrong",
+            "mock configuration",
+            "mock chain",
+        ]
+
+        if any(indicator in response_lower for indicator in mock_error_indicators):
+            decision = "INVALID"
+            test_issues = ["Mock configuration error detected - tests need to be fixed"]
+            code_issues = []
+        elif "invalid" in response_lower and "test" in response_lower:
             decision = "INVALID"
             test_issues = ["Could not parse detailed issues - tests may be invalid"]
             code_issues = []

@@ -2,55 +2,70 @@
 Google Sheets Source Connector
 
 A production-ready connector for extracting data from Google Sheets.
-Supports OAuth2 and Service Account authentication methods.
+Supports service account and OAuth2 authentication methods.
 """
 
-from src.auth import (
-    GoogleSheetsAuthenticator,
-    ServiceAccountAuth,
-    OAuth2Auth,
+from .auth import (
     AuthenticationError,
+    GoogleSheetsAuthenticator,
+    ServiceAccountAuthenticator,
+    OAuth2Authenticator,
 )
-from src.client import GoogleSheetsClient, GoogleSheetsAPIError
-from src.config import (
+from .client import (
+    GoogleSheetsClient,
+    RateLimitError,
+    APIError,
+)
+from .config import (
     GoogleSheetsConfig,
     ServiceAccountCredentials,
     OAuth2Credentials,
-)
-from src.connector import GoogleSheetsConnector
-from src.streams import (
-    SheetStream,
     StreamConfig,
-    SyncMode,
 )
-from src.utils import (
-    extract_spreadsheet_id,
-    sanitize_sheet_name,
+from .connector import (
+    GoogleSheetsConnector,
+    ConnectionTestResult,
+)
+from .streams import (
+    SheetStream,
+    StreamSchema,
+    StreamMetadata,
+)
+from .utils import (
     normalize_header,
+    parse_spreadsheet_id,
+    build_range_notation,
+    infer_json_schema_type,
 )
 
 __version__ = "1.0.0"
+__author__ = "Connector Platform"
+
 __all__ = [
     # Auth
-    "GoogleSheetsAuthenticator",
-    "ServiceAccountAuth",
-    "OAuth2Auth",
     "AuthenticationError",
+    "GoogleSheetsAuthenticator",
+    "ServiceAccountAuthenticator",
+    "OAuth2Authenticator",
     # Client
     "GoogleSheetsClient",
-    "GoogleSheetsAPIError",
+    "RateLimitError",
+    "APIError",
     # Config
     "GoogleSheetsConfig",
     "ServiceAccountCredentials",
     "OAuth2Credentials",
+    "StreamConfig",
     # Connector
     "GoogleSheetsConnector",
+    "ConnectionTestResult",
     # Streams
     "SheetStream",
-    "StreamConfig",
-    "SyncMode",
+    "StreamSchema",
+    "StreamMetadata",
     # Utils
-    "extract_spreadsheet_id",
-    "sanitize_sheet_name",
     "normalize_header",
+    "parse_spreadsheet_id",
+    "build_range_notation",
+    "infer_json_schema_type",
 ]

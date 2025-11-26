@@ -1,136 +1,136 @@
-"""
-Import validation tests for Google Sheets connector modules.
-"""
-import os
-import sys
+"""Import validation tests for Google Sheets connector."""
 
+import sys
+import os
 import pytest
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add parent directory to path to import from src package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 class TestImports:
     """Test that all modules can be imported without errors."""
 
     def test_import_utils(self):
-        """Test importing utils module."""
+        """Test utils module can be imported."""
         try:
-            from utils import (
-                extract_spreadsheet_id,
-                sanitize_sheet_name,
+            from src.utils import (
                 normalize_header,
-                deduplicate_headers,
-                convert_value,
-                infer_type,
-                generate_record_id,
-                chunk_list,
-                format_a1_range,
-                get_column_letter,
-                get_current_timestamp,
-                safe_get,
-                flatten_dict,
+                parse_spreadsheet_id,
+                build_range_notation,
+                infer_json_schema_type,
+                infer_schema_from_values,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from utils: {e}")
+            pytest.fail(f"Failed to import utils: {e}")
+
+    def test_import_config(self):
+        """Test config module can be imported."""
+        try:
+            from src.config import (
+                GoogleSheetsConfig,
+                ServiceAccountCredentials,
+                OAuth2Credentials,
+                StreamConfig,
+                RateLimitSettings,
+                Catalog,
+                CatalogEntry,
+            )
+        except ImportError as e:
+            pytest.fail(f"Failed to import config: {e}")
 
     def test_import_auth(self):
-        """Test importing auth module."""
+        """Test auth module can be imported."""
         try:
-            from auth import (
-                GoogleSheetsAuthenticator,
-                ServiceAccountAuth,
-                OAuth2Auth,
+            from src.auth import (
                 AuthenticationError,
+                GoogleSheetsAuthenticator,
+                ServiceAccountAuthenticator,
+                OAuth2Authenticator,
                 create_authenticator,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from auth: {e}")
-
-    def test_import_config(self):
-        """Test importing config module."""
-        try:
-            from config import (
-                AuthType,
-                ServiceAccountCredentials,
-                OAuth2Credentials,
-                StreamSelection,
-                GoogleSheetsConfig,
-                ConfigSchema,
-            )
-        except ImportError as e:
-            pytest.fail(f"Failed to import from config: {e}")
+            pytest.fail(f"Failed to import auth: {e}")
 
     def test_import_client(self):
-        """Test importing client module."""
+        """Test client module can be imported."""
         try:
-            from client import (
+            from src.client import (
                 GoogleSheetsClient,
-                GoogleSheetsAPIError,
+                RateLimitConfig,
+                APIError,
                 RateLimitError,
-                SpreadsheetNotFoundError,
-                AccessDeniedError,
-                InvalidRequestError,
+                NotFoundError,
+                PermissionDeniedError,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from client: {e}")
+            pytest.fail(f"Failed to import client: {e}")
 
     def test_import_streams(self):
-        """Test importing streams module."""
+        """Test streams module can be imported."""
         try:
-            from streams import (
-                SyncMode,
-                StreamSchema,
-                StreamConfig,
+            from src.streams import (
                 SheetStream,
-                StreamCatalog,
+                StreamMetadata,
+                StreamSchema,
+                MultiSheetReader,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from streams: {e}")
+            pytest.fail(f"Failed to import streams: {e}")
 
     def test_import_connector(self):
-        """Test importing connector module."""
+        """Test connector module can be imported."""
         try:
-            from connector import (
-                ConnectorStatus,
-                ConnectionCheckResult,
-                SyncResult,
+            from src.connector import (
                 GoogleSheetsConnector,
+                ConnectionTestResult,
+                create_connector,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from connector: {e}")
+            pytest.fail(f"Failed to import connector: {e}")
 
     def test_import_package_init(self):
-        """Test importing from package __init__."""
+        """Test the package __init__.py can be imported."""
         try:
-            import src
             from src import (
-                GoogleSheetsAuthenticator,
-                ServiceAccountAuth,
-                OAuth2Auth,
-                AuthenticationError,
-                GoogleSheetsClient,
-                GoogleSheetsAPIError,
+                GoogleSheetsConnector,
                 GoogleSheetsConfig,
                 ServiceAccountCredentials,
                 OAuth2Credentials,
-                GoogleSheetsConnector,
-                SheetStream,
-                StreamConfig,
-                SyncMode,
-                extract_spreadsheet_id,
-                sanitize_sheet_name,
-                normalize_header,
+                AuthenticationError,
+                APIError,
+                RateLimitError,
             )
         except ImportError as e:
-            pytest.fail(f"Failed to import from src package: {e}")
+            pytest.fail(f"Failed to import from package: {e}")
 
-    def test_version_defined(self):
-        """Test that version is defined in package."""
+    def test_pydantic_models_are_valid(self):
+        """Test that Pydantic models are properly defined."""
+        try:
+            from src.config import (
+                GoogleSheetsConfig,
+                ServiceAccountCredentials,
+                OAuth2Credentials,
+            )
+
+            # Try to access model fields
+            assert hasattr(ServiceAccountCredentials, 'model_fields')
+            assert hasattr(OAuth2Credentials, 'model_fields')
+            assert hasattr(GoogleSheetsConfig, 'model_fields')
+
+            # Check auth_type field exists for discriminator
+            assert 'auth_type' in ServiceAccountCredentials.model_fields
+            assert 'auth_type' in OAuth2Credentials.model_fields
+
+        except Exception as e:
+            pytest.fail(f"Pydantic models validation failed: {e}")
+
+    def test_all_exports_accessible(self):
+        """Test that all __all__ exports are accessible."""
         try:
             import src
-            assert hasattr(src, '__version__'), "Package should have __version__ attribute"
-            assert src.__version__ is not None
-            assert len(src.__version__) > 0
-        except ImportError as e:
-            pytest.fail(f"Failed to import src package: {e}")
+
+            for name in src.__all__:
+                assert hasattr(src, name), f"Export '{name}' not accessible from package"
+        except Exception as e:
+            pytest.fail(f"Package exports check failed: {e}")

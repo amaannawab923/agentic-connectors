@@ -1,89 +1,86 @@
-"""
-Shared fixtures and mocks for Google Sheets connector tests.
-"""
-import json
-import os
-import re
-import sys
-from unittest.mock import MagicMock, patch
+"""Shared test fixtures for Google Sheets connector tests."""
 
 import pytest
+import httpretty
+import json
+import re
+import sys
+import os
+from unittest.mock import Mock, patch, MagicMock
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add parent directory to path to import from src package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 @pytest.fixture(scope="session")
 def valid_private_key():
-    """Load or generate a valid RSA private key for testing."""
+    """Generate or load a valid RSA private key for testing."""
     key_path = '/tmp/test_private_key.pem'
-    try:
+    if os.path.exists(key_path):
         with open(key_path, 'r') as f:
             return f.read()
-    except FileNotFoundError:
-        # Generate key if not exists
-        import subprocess
-        subprocess.run([
-            'openssl', 'genpkey', '-algorithm', 'RSA',
-            '-out', key_path, '-pkeyopt', 'rsa_keygen_bits:2048'
-        ], capture_output=True)
-        with open(key_path, 'r') as f:
-            return f.read()
+    else:
+        # Fallback if key generation failed
+        return """-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7ld7D+5NlGiNd
+Ox9h9nNQEJZ8QRd2H9T5aTHVwMbNVP+Nxk3qKJKcwNKiPGkZC7RpTmDHWHQVJBnT
+Qzw1z1aKJM5uH7C4rGPYPWA1y0yVFOD9jF9qKQYN9Rf3Th6dQxQ4HgXPk7JwKVn1
+L8kJKfF9x1K7P8jL4J0a5QA9D9qKqDLJNMK6mH3U8Rw1Z9kL7cXWHJD4qJ3KOJ9Y
+W6L2M8nP5J4Q3C9V0R7yU5n8D2kL3J9q0M7xK6W4d5L8hN3qK9pJ2vR8bW6nP0L7
+cM3qK8dL5J2xR9kN7pW4cL6nM8qK3dL5J9xR2pW7kN4cL8nM6qK5dL3J2xR9pW4k
+N7cL8nM3qAgMBAAECggEABJl3ld7D+5NlGiNdOx9h9nNQEJZ8QRd2H9T5aTHVwMbN
+VP+Nxk3qKJKcwNKiPGkZC7RpTmDHWHQVJBnTQzw1z1aKJM5uH7C4rGPYPWA1y0yV
+FOD9jF9qKQYN9Rf3Th6dQxQ4HgXPk7JwKVn1L8kJKfF9x1K7P8jL4J0a5QA9D9qK
+qDLJNMK6mH3U8Rw1Z9kL7cXWHJD4qJ3KOJ9YW6L2M8nP5J4Q3C9V0R7yU5n8D2kL
+3J9q0M7xK6W4d5L8hN3qK9pJ2vR8bW6nP0L7cM3qK8dL5J2xR9kN7pW4cL6nM8qK
+3dL5J9xR2pW7kN4cL8nM6qK5dL3J2xR9pW4kN7cL8nM3qQKBgQDnld7D+5NlGiNd
+-----END PRIVATE KEY-----"""
 
 
 @pytest.fixture
-def valid_service_account_info(valid_private_key):
-    """Create a valid service account info dict for testing."""
-    return {
-        "type": "service_account",
-        "project_id": "test-project",
-        "private_key_id": "key123",
-        "private_key": valid_private_key,
-        "client_email": "test@test-project.iam.gserviceaccount.com",
-        "client_id": "123456789",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test%40test-project.iam.gserviceaccount.com"
-    }
-
-
-@pytest.fixture
-def valid_service_account_config(valid_service_account_info):
+def service_account_config(valid_private_key):
     """Create a valid service account configuration."""
     return {
         "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
         "credentials": {
             "auth_type": "service_account",
-            "service_account_info": valid_service_account_info
-        },
-        "row_batch_size": 200,
-        "requests_per_minute": 60
+            "type": "service_account",
+            "project_id": "test-project-123",
+            "private_key_id": "key-id-12345",
+            "private_key": valid_private_key,
+            "client_email": "test-connector@test-project-123.iam.gserviceaccount.com",
+            "client_id": "123456789",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test-connector%40test-project-123.iam.gserviceaccount.com"
+        }
     }
 
 
 @pytest.fixture
-def valid_oauth2_config():
+def oauth2_config():
     """Create a valid OAuth2 configuration."""
     return {
         "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
         "credentials": {
             "auth_type": "oauth2",
-            "client_id": "test-client-id.apps.googleusercontent.com",
+            "client_id": "123456789.apps.googleusercontent.com",
             "client_secret": "test-client-secret",
-            "refresh_token": "test-refresh-token"
+            "refresh_token": "test-refresh-token-12345"
         }
     }
 
 
 @pytest.fixture
 def mock_spreadsheet_metadata():
-    """Create mock spreadsheet metadata response."""
+    """Mock spreadsheet metadata response."""
     return {
         "spreadsheetId": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
         "properties": {
             "title": "Test Spreadsheet",
-            "locale": "en_US"
+            "locale": "en_US",
+            "timeZone": "America/New_York"
         },
         "sheets": [
             {
@@ -93,14 +90,15 @@ def mock_spreadsheet_metadata():
                     "index": 0,
                     "gridProperties": {
                         "rowCount": 1000,
-                        "columnCount": 26
+                        "columnCount": 26,
+                        "frozenRowCount": 1
                     }
                 }
             },
             {
                 "properties": {
-                    "sheetId": 1,
-                    "title": "Data & Analysis",
+                    "sheetId": 123456,
+                    "title": "Data Sheet",
                     "index": 1,
                     "gridProperties": {
                         "rowCount": 500,
@@ -113,69 +111,112 @@ def mock_spreadsheet_metadata():
 
 
 @pytest.fixture
-def mock_sheet_values():
-    """Create mock sheet values response."""
+def mock_values_response():
+    """Mock values response from sheets API."""
     return {
-        "range": "Sheet1!A1:Z1000",
+        "range": "'Sheet1'!A1:D10",
         "majorDimension": "ROWS",
         "values": [
-            ["Name", "Email", "Age"],
-            ["John Doe", "john@example.com", "30"],
-            ["Jane Smith", "jane@example.com", "25"],
-            ["Bob Wilson", "bob@example.com", "35"]
+            ["Name", "Email", "Age", "City"],
+            ["Alice", "alice@example.com", 30, "New York"],
+            ["Bob", "bob@example.com", 25, "Los Angeles"],
+            ["Charlie", "charlie@example.com", 35, "Chicago"]
         ]
     }
 
 
 @pytest.fixture
-def mock_header_values():
-    """Create mock header row response."""
+def mock_header_response():
+    """Mock header row response."""
     return {
-        "range": "Sheet1!1:1",
+        "range": "'Sheet1'!1:1",
         "majorDimension": "ROWS",
         "values": [
-            ["Name", "Email", "Age"]
+            ["Name", "Email", "Age", "City"]
         ]
     }
 
 
 @pytest.fixture
-def mock_credentials():
-    """Create mock Google credentials."""
-    mock_creds = MagicMock()
-    mock_creds.valid = True
-    mock_creds.expired = False
-    mock_creds.token = "mock-access-token"
-    mock_creds.service_account_email = "test@test-project.iam.gserviceaccount.com"
-    # Required by Google API client to match universe domain
-    mock_creds.universe_domain = "googleapis.com"
-    return mock_creds
+def mock_google_auth():
+    """Mock Google authentication to prevent actual API calls."""
+    with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds:
+        mock_credentials = Mock()
+        mock_credentials.valid = True
+        mock_credentials.expired = False
+        mock_credentials.token = "mock-access-token"
+        mock_credentials.refresh = Mock()
+        mock_creds.return_value = mock_credentials
+        yield mock_creds
 
 
 @pytest.fixture
-def mock_google_sheets_service(mock_spreadsheet_metadata, mock_sheet_values, mock_header_values):
-    """Create mock Google Sheets API service."""
-    mock_service = MagicMock()
-    
-    # Mock spreadsheets().get()
-    mock_service.spreadsheets.return_value.get.return_value.execute.return_value = mock_spreadsheet_metadata
-    
-    # Mock spreadsheets().values().get()
-    def mock_values_get(**kwargs):
-        mock_execute = MagicMock()
-        range_name = kwargs.get('range', '')
-        if '!1:1' in range_name:
-            mock_execute.execute.return_value = mock_header_values
-        else:
-            mock_execute.execute.return_value = mock_sheet_values
-        return mock_execute
-    
-    mock_service.spreadsheets.return_value.values.return_value.get.side_effect = mock_values_get
-    
-    # Mock spreadsheets().values().batchGet()
-    mock_service.spreadsheets.return_value.values.return_value.batchGet.return_value.execute.return_value = {
-        "spreadsheetId": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-        "valueRanges": [mock_sheet_values]
-    }
-    
-    return mock_service
+def mock_google_build():
+    """Mock googleapiclient.discovery.build."""
+    with patch('googleapiclient.discovery.build') as mock_build:
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        yield mock_build, mock_service
+
+
+@pytest.fixture
+def mock_sheets_api(mock_spreadsheet_metadata, mock_values_response, mock_header_response):
+    """Setup comprehensive mocks for the Google Sheets API."""
+    # Patch at the module level where these are imported, not where they're defined
+    with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
+         patch('src.client.build') as mock_build, \
+         patch('src.auth.Request') as mock_request:
+
+        # Mock credentials with all required attributes
+        mock_credentials = MagicMock()
+        mock_credentials.valid = True
+        mock_credentials.expired = False
+        mock_credentials.token = "mock-access-token"
+        mock_credentials.refresh = MagicMock()
+        mock_credentials.universe_domain = "googleapis.com"  # Required for universe domain validation
+
+        # Handle the with_scopes call chain which is used internally
+        mock_credentials.with_scopes = MagicMock(return_value=mock_credentials)
+
+        mock_creds.return_value = mock_credentials
+
+        # Mock API service - need to return MagicMock that has proper resources
+        mock_service = MagicMock()
+
+        # Configure the spreadsheets resource
+        # IMPORTANT: spreadsheets() is called as a method, so we need to mock it properly
+        mock_spreadsheets = MagicMock()
+        mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
+
+        # Mock spreadsheets().get() - returns an object with .execute()
+        mock_get_request = MagicMock()
+        mock_get_request.execute = MagicMock(return_value=mock_spreadsheet_metadata)
+        mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
+
+        # Mock spreadsheets().values() - returns an object with .get()
+        mock_values = MagicMock()
+        mock_spreadsheets.values = MagicMock(return_value=mock_values)
+
+        def mock_values_get(**kwargs):
+            mock_response = MagicMock()
+            range_notation = kwargs.get('range', '')
+
+            # Return header for row 1
+            if ':1' in range_notation or range_notation.endswith(':1'):
+                mock_response.execute = MagicMock(return_value=mock_header_response)
+            else:
+                mock_response.execute = MagicMock(return_value=mock_values_response)
+
+            return mock_response
+
+        mock_values.get = MagicMock(side_effect=mock_values_get)
+
+        mock_build.return_value = mock_service
+
+        yield {
+            'credentials': mock_creds,
+            'build': mock_build,
+            'service': mock_service,
+            'spreadsheet_metadata': mock_spreadsheet_metadata,
+            'values_response': mock_values_response
+        }

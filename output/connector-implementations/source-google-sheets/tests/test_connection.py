@@ -1,255 +1,218 @@
-"""
-Connection check tests for Google Sheets connector.
-"""
-import os
+"""Connection check tests for Google Sheets connector."""
+
 import sys
-from unittest.mock import MagicMock, patch
-
+import os
 import pytest
+from unittest.mock import Mock, patch, MagicMock
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add parent directory to path to import from src package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from auth import AuthenticationError, ServiceAccountAuth, OAuth2Auth, create_authenticator
-from client import GoogleSheetsClient, GoogleSheetsAPIError, SpreadsheetNotFoundError, AccessDeniedError
-from connector import GoogleSheetsConnector, ConnectorStatus
-
-
-class TestServiceAccountAuth:
-    """Test ServiceAccountAuth authentication handler."""
-
-    def test_service_account_auth_init_with_info(self, valid_service_account_info):
-        """Test ServiceAccountAuth initialization with info dict."""
-        auth = ServiceAccountAuth(service_account_info=valid_service_account_info)
-        assert auth._service_account_info == valid_service_account_info
-
-    def test_service_account_auth_init_with_file(self, tmp_path, valid_service_account_info):
-        """Test ServiceAccountAuth initialization with file path."""
-        import json
-        creds_file = tmp_path / "creds.json"
-        creds_file.write_text(json.dumps(valid_service_account_info))
-        
-        auth = ServiceAccountAuth(service_account_file=str(creds_file))
-        assert auth._service_account_file == str(creds_file)
-
-    def test_service_account_auth_missing_credentials_fails(self):
-        """Test ServiceAccountAuth fails without credentials."""
-        with pytest.raises(AuthenticationError) as exc_info:
-            ServiceAccountAuth()
-        assert "Must provide either service_account_info or service_account_file" in str(exc_info.value)
-
-    @patch('auth.service_account.Credentials')
-    def test_service_account_get_credentials(self, mock_creds_class, valid_service_account_info, mock_credentials):
-        """Test ServiceAccountAuth.get_credentials() method."""
-        mock_creds_class.from_service_account_info.return_value = mock_credentials
-        
-        auth = ServiceAccountAuth(service_account_info=valid_service_account_info)
-        creds = auth.get_credentials()
-        
-        mock_creds_class.from_service_account_info.assert_called_once()
-        assert creds == mock_credentials
-
-
-class TestOAuth2Auth:
-    """Test OAuth2Auth authentication handler."""
-
-    def test_oauth2_auth_init(self):
-        """Test OAuth2Auth initialization."""
-        auth = OAuth2Auth(
-            client_id="test-client-id",
-            client_secret="test-secret",
-            refresh_token="test-refresh-token"
-        )
-        assert auth._client_id == "test-client-id"
-        assert auth._client_secret == "test-secret"
-        assert auth._refresh_token == "test-refresh-token"
-
-    @patch('auth.Credentials')
-    @patch('auth.Request')
-    def test_oauth2_get_credentials(self, mock_request, mock_creds_class, mock_credentials):
-        """Test OAuth2Auth.get_credentials() method."""
-        mock_creds_class.from_authorized_user_info.return_value = mock_credentials
-        mock_credentials.expired = False
-        mock_credentials.token = "mock-token"
-        
-        auth = OAuth2Auth(
-            client_id="test-client-id",
-            client_secret="test-secret",
-            refresh_token="test-refresh-token"
-        )
-        creds = auth.get_credentials()
-        
-        mock_creds_class.from_authorized_user_info.assert_called_once()
-
-
-class TestCreateAuthenticator:
-    """Test create_authenticator factory function."""
-
-    def test_create_service_account_authenticator(self, valid_service_account_info):
-        """Test creating service account authenticator."""
-        auth = create_authenticator("service_account", {
-            "service_account_info": valid_service_account_info
-        })
-        assert isinstance(auth, ServiceAccountAuth)
-
-    def test_create_oauth2_authenticator(self):
-        """Test creating OAuth2 authenticator."""
-        auth = create_authenticator("oauth2", {
-            "client_id": "test-client-id",
-            "client_secret": "test-secret",
-            "refresh_token": "test-refresh-token"
-        })
-        assert isinstance(auth, OAuth2Auth)
-
-    def test_create_unknown_type_fails(self):
-        """Test creating unknown auth type fails."""
-        with pytest.raises(AuthenticationError) as exc_info:
-            create_authenticator("unknown", {})
-        assert "Unknown authentication type" in str(exc_info.value)
-
-
-class TestGoogleSheetsClient:
-    """Test GoogleSheetsClient operations."""
-
-    @patch('client.build')
-    def test_client_get_spreadsheet_metadata(self, mock_build, mock_credentials, mock_spreadsheet_metadata):
-        """Test getting spreadsheet metadata."""
-        # Setup mock service
-        mock_service = MagicMock()
-        mock_build.return_value = mock_service
-        mock_service.spreadsheets.return_value.get.return_value.execute.return_value = mock_spreadsheet_metadata
-        
-        # Create mock authenticator
-        mock_auth = MagicMock()
-        mock_auth.get_credentials.return_value = mock_credentials
-        
-        # Test
-        client = GoogleSheetsClient(authenticator=mock_auth)
-        metadata = client.get_spreadsheet_metadata("test-spreadsheet-id")
-        
-        assert metadata == mock_spreadsheet_metadata
-        mock_service.spreadsheets.return_value.get.assert_called_once_with(spreadsheetId="test-spreadsheet-id")
-
-    @patch('client.build')
-    def test_client_get_sheet_names(self, mock_build, mock_credentials, mock_spreadsheet_metadata):
-        """Test getting sheet names."""
-        mock_service = MagicMock()
-        mock_build.return_value = mock_service
-        mock_service.spreadsheets.return_value.get.return_value.execute.return_value = mock_spreadsheet_metadata
-        
-        mock_auth = MagicMock()
-        mock_auth.get_credentials.return_value = mock_credentials
-        
-        client = GoogleSheetsClient(authenticator=mock_auth)
-        names = client.get_sheet_names("test-spreadsheet-id")
-        
-        assert "Sheet1" in names
-        assert "Data & Analysis" in names
-
-    @patch('client.build')
-    def test_client_get_values(self, mock_build, mock_credentials, mock_sheet_values):
-        """Test getting sheet values."""
-        mock_service = MagicMock()
-        mock_build.return_value = mock_service
-        mock_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = mock_sheet_values
-        
-        mock_auth = MagicMock()
-        mock_auth.get_credentials.return_value = mock_credentials
-        
-        client = GoogleSheetsClient(authenticator=mock_auth)
-        values = client.get_values("test-id", "Sheet1!A1:Z100")
-        
-        assert len(values) == 4  # Header + 3 data rows
-        assert values[0] == ["Name", "Email", "Age"]
+from src.connector import GoogleSheetsConnector, ConnectionTestResult, create_connector
+from src.config import GoogleSheetsConfig, ServiceAccountCredentials
+from src.client import APIError, NotFoundError, PermissionDeniedError
+from src.auth import AuthenticationError
 
 
 class TestConnectionCheck:
-    """Test connector connection checking."""
+    """Test connection checking functionality."""
 
-    @patch('connector.GoogleSheetsClient')
-    @patch('connector.create_authenticator')
-    def test_check_connection_success(self, mock_create_auth, mock_client_class, 
-                                       valid_service_account_config, mock_spreadsheet_metadata):
+    def test_check_connection_success(self, service_account_config, mock_sheets_api):
         """Test successful connection check."""
-        # Setup mocks
-        mock_auth = MagicMock()
-        mock_create_auth.return_value = mock_auth
-        
-        mock_client = MagicMock()
-        mock_client.get_spreadsheet_metadata.return_value = mock_spreadsheet_metadata
-        mock_client_class.return_value = mock_client
-        
-        # Test
-        connector = GoogleSheetsConnector(valid_service_account_config)
+        config = GoogleSheetsConfig(**service_account_config)
+        connector = GoogleSheetsConnector(config)
+
         result = connector.check_connection()
-        
-        assert result.status == ConnectorStatus.SUCCEEDED
-        assert "Test Spreadsheet" in result.message
-        assert result.details["sheet_count"] == 2
 
-    @patch('connector.GoogleSheetsClient')
-    @patch('connector.create_authenticator')
-    def test_check_connection_auth_failure(self, mock_create_auth, mock_client_class,
-                                            valid_service_account_config):
-        """Test connection check with authentication failure."""
-        # Import AuthenticationError from the same module the connector uses
-        from src.auth import AuthenticationError as SrcAuthenticationError
+        assert result.success is True
+        assert result.spreadsheet_title == "Test Spreadsheet"
+        assert result.sheet_count == 2
+        assert result.error is None
 
-        mock_auth = MagicMock()
-        mock_create_auth.return_value = mock_auth
+    def test_check_connection_returns_connection_test_result(self, service_account_config, mock_sheets_api):
+        """Test that check_connection returns a ConnectionTestResult."""
+        config = GoogleSheetsConfig(**service_account_config)
+        connector = GoogleSheetsConnector(config)
 
-        mock_client = MagicMock()
-        # Use the AuthenticationError from src.auth so the connector catches it properly
-        mock_client.get_spreadsheet_metadata.side_effect = SrcAuthenticationError(
-            "Invalid credentials",
-            details={"error": "test"}
+        result = connector.check_connection()
+
+        assert isinstance(result, ConnectionTestResult)
+
+    def test_check_connection_authentication_error(self, service_account_config):
+        """Test connection check handles authentication errors."""
+        with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds, \
+             patch('googleapiclient.discovery.build') as mock_build:
+
+            mock_creds.side_effect = ValueError("Invalid credentials")
+
+            config = GoogleSheetsConfig(**service_account_config)
+            connector = GoogleSheetsConnector(config)
+
+            result = connector.check_connection()
+
+            # Should return failure, not raise an exception
+            assert result.success is False
+            assert result.error is not None
+
+    def test_check_connection_not_found_error(self, service_account_config):
+        """Test connection check handles spreadsheet not found."""
+        # Patch at the module level where these are imported
+        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
+             patch('src.client.build') as mock_build:
+
+            mock_credentials = MagicMock()
+            mock_credentials.valid = True
+            mock_credentials.expired = False
+            mock_credentials.universe_domain = "googleapis.com"
+            mock_creds.return_value = mock_credentials
+
+            mock_service = MagicMock()
+            mock_spreadsheets = MagicMock()
+            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
+
+            # Simulate NotFoundError
+            from googleapiclient.errors import HttpError
+            mock_response = MagicMock()
+            mock_response.status = 404
+            mock_response.reason = "Not Found"
+            mock_get_request = MagicMock()
+            mock_get_request.execute = MagicMock(side_effect=HttpError(
+                mock_response, b'{"error": {"message": "Spreadsheet not found"}}'
+            ))
+            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
+
+            mock_build.return_value = mock_service
+
+            config = GoogleSheetsConfig(**service_account_config)
+            connector = GoogleSheetsConnector(config)
+
+            result = connector.check_connection()
+
+            assert result.success is False
+            assert "not found" in result.message.lower()
+
+    def test_check_connection_permission_denied(self, service_account_config):
+        """Test connection check handles permission denied."""
+        # Patch at the module level where these are imported
+        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
+             patch('src.client.build') as mock_build:
+
+            mock_credentials = MagicMock()
+            mock_credentials.valid = True
+            mock_credentials.expired = False
+            mock_credentials.universe_domain = "googleapis.com"
+            mock_creds.return_value = mock_credentials
+
+            mock_service = MagicMock()
+            mock_spreadsheets = MagicMock()
+            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
+
+            # Simulate PermissionDeniedError
+            from googleapiclient.errors import HttpError
+            mock_response = MagicMock()
+            mock_response.status = 403
+            mock_response.reason = "Forbidden"
+            mock_get_request = MagicMock()
+            mock_get_request.execute = MagicMock(side_effect=HttpError(
+                mock_response, b'{"error": {"message": "Permission denied"}}'
+            ))
+            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
+
+            mock_build.return_value = mock_service
+
+            config = GoogleSheetsConfig(**service_account_config)
+            connector = GoogleSheetsConnector(config)
+
+            result = connector.check_connection()
+
+            assert result.success is False
+            assert "permission" in result.message.lower()
+
+    def test_connection_test_result_string_representation(self):
+        """Test ConnectionTestResult string representation."""
+        # Success case
+        result_success = ConnectionTestResult(
+            success=True,
+            message="Connection successful",
+            spreadsheet_title="My Spreadsheet",
+            sheet_count=3,
         )
-        mock_client_class.return_value = mock_client
+        assert "successful" in str(result_success).lower()
+        assert "My Spreadsheet" in str(result_success)
 
-        connector = GoogleSheetsConnector(valid_service_account_config)
-        result = connector.check_connection()
-
-        assert result.status == ConnectorStatus.FAILED
-        assert "Authentication failed" in result.message
-
-    @patch('connector.GoogleSheetsClient')
-    @patch('connector.create_authenticator')
-    def test_check_connection_spreadsheet_not_found(self, mock_create_auth, mock_client_class,
-                                                     valid_service_account_config):
-        """Test connection check with spreadsheet not found error."""
-        mock_auth = MagicMock()
-        mock_create_auth.return_value = mock_auth
-        
-        mock_client = MagicMock()
-        mock_client.get_spreadsheet_metadata.side_effect = SpreadsheetNotFoundError(
-            "Spreadsheet not found",
-            status_code=404
+        # Failure case
+        result_failure = ConnectionTestResult(
+            success=False,
+            message="Authentication failed",
         )
-        mock_client_class.return_value = mock_client
-        
-        connector = GoogleSheetsConnector(valid_service_account_config)
-        result = connector.check_connection()
-        
-        assert result.status == ConnectorStatus.FAILED
-        assert "Spreadsheet not found" in result.message
+        assert "failed" in str(result_failure).lower()
 
-    @patch('connector.GoogleSheetsClient')
-    @patch('connector.create_authenticator')
-    def test_check_connection_access_denied(self, mock_create_auth, mock_client_class,
-                                            valid_service_account_config):
-        """Test connection check with access denied error."""
-        mock_auth = MagicMock()
-        mock_create_auth.return_value = mock_auth
-        
-        mock_client = MagicMock()
-        mock_client.get_spreadsheet_metadata.side_effect = AccessDeniedError(
-            "Access denied",
-            status_code=403
-        )
-        mock_client_class.return_value = mock_client
-        
-        connector = GoogleSheetsConnector(valid_service_account_config)
-        result = connector.check_connection()
-        
-        assert result.status == ConnectorStatus.FAILED
-        assert "Access denied" in result.message
+
+class TestConnectorFactory:
+    """Test the create_connector factory function."""
+
+    def test_create_connector_with_service_account(self, service_account_config, mock_sheets_api):
+        """Test creating connector with service account config dict."""
+        connector = create_connector(service_account_config)
+
+        assert isinstance(connector, GoogleSheetsConnector)
+        assert connector.config.spreadsheet_id == service_account_config["spreadsheet_id"]
+
+    def test_create_connector_with_oauth2(self, oauth2_config):
+        """Test creating connector with OAuth2 config dict."""
+        with patch('google.oauth2.credentials.Credentials') as mock_creds:
+            connector = create_connector(oauth2_config)
+
+            assert isinstance(connector, GoogleSheetsConnector)
+            assert connector.config.spreadsheet_id == oauth2_config["spreadsheet_id"]
+
+    def test_create_connector_auto_detects_auth_type(self, valid_private_key):
+        """Test create_connector auto-detects auth type when not specified."""
+        config_dict = {
+            "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+            "credentials": {
+                "project_id": "test-project",
+                "private_key": valid_private_key,
+                "client_email": "test@test.iam.gserviceaccount.com",
+            }
+        }
+
+        with patch('google.oauth2.service_account.Credentials.from_service_account_info'):
+            connector = create_connector(config_dict)
+            assert isinstance(connector.config.credentials, ServiceAccountCredentials)
+
+
+class TestConnectorContextManager:
+    """Test connector context manager functionality."""
+
+    def test_connector_context_manager(self, service_account_config, mock_sheets_api):
+        """Test connector can be used as context manager."""
+        config = GoogleSheetsConfig(**service_account_config)
+
+        with GoogleSheetsConnector(config) as connector:
+            result = connector.check_connection()
+            assert result.success is True
+
+    def test_connector_close_called_on_exit(self, service_account_config, mock_sheets_api):
+        """Test connector.close() is called when exiting context."""
+        config = GoogleSheetsConfig(**service_account_config)
+        connector = GoogleSheetsConnector(config)
+
+        with patch.object(connector, 'close') as mock_close:
+            with connector:
+                pass
+            mock_close.assert_called_once()
+
+    def test_connector_explicit_close(self, service_account_config, mock_sheets_api):
+        """Test explicit connector close."""
+        config = GoogleSheetsConfig(**service_account_config)
+        connector = GoogleSheetsConnector(config)
+
+        # Access client to create it
+        _ = connector.check_connection()
+
+        # Close should not raise
+        connector.close()
+
+        # Should be able to close multiple times
+        connector.close()

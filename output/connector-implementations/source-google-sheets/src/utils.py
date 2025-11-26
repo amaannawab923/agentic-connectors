@@ -1,297 +1,281 @@
 """
 Utility functions for Google Sheets connector.
 
-Provides helper functions for data transformation, validation,
-and common operations.
+Provides helper functions for:
+- Header normalization
+- Range notation building
+- Schema inference
+- Data type detection
 """
 
-import hashlib
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse, parse_qs
 
 
-def extract_spreadsheet_id(url_or_id: str) -> str:
+def normalize_header(headers: List[Any]) -> List[str]:
     """
-    Extract the spreadsheet ID from a URL or return the ID if already extracted.
+    Normalize column headers to valid, unique identifiers.
+
+    Handles:
+    - Empty headers (generates column_N names)
+    - Duplicate headers (appends _N suffix)
+    - Non-string values (converts to string)
+    - Special characters (replaces with underscores)
 
     Args:
-        url_or_id: Either a full Google Sheets URL or just the spreadsheet ID.
+        headers: List of raw header values from the spreadsheet.
+
+    Returns:
+        List of normalized, unique header strings.
+
+    Example:
+        >>> normalize_header(["Name", "Email", "", "Name", None])
+        ["name", "email", "column_2", "name_1", "column_4"]
+    """
+    normalized = []
+    seen: Dict[str, int] = {}
+
+    for i, header in enumerate(headers):
+        # Handle empty or None headers
+        if header is None or (isinstance(header, str) and header.strip() == ""):
+            base_name = f"column_{i}"
+        else:
+            # Convert to string and clean
+            base_name = str(header).strip()
+            # Replace special characters with underscores
+            base_name = re.sub(r"[^\w\s]", "_", base_name)
+            # Replace whitespace with underscores
+            base_name = re.sub(r"\s+", "_", base_name)
+            # Remove leading/trailing underscores
+            base_name = base_name.strip("_")
+            # Convert to lowercase
+            base_name = base_name.lower()
+            # Ensure it starts with a letter or underscore
+            if base_name and not base_name[0].isalpha() and base_name[0] != "_":
+                base_name = f"col_{base_name}"
+            # Handle empty result after cleaning
+            if not base_name:
+                base_name = f"column_{i}"
+
+        # Handle duplicates
+        if base_name in seen:
+            seen[base_name] += 1
+            unique_name = f"{base_name}_{seen[base_name]}"
+        else:
+            seen[base_name] = 0
+            unique_name = base_name
+
+        normalized.append(unique_name)
+
+    return normalized
+
+
+def build_range_notation(
+    sheet_name: str,
+    start_col: str = "A",
+    start_row: Optional[int] = None,
+    end_col: Optional[str] = None,
+    end_row: Optional[int] = None,
+) -> str:
+    """
+    Build A1 notation range string.
+
+    Args:
+        sheet_name: Name of the sheet (will be quoted if needed).
+        start_col: Starting column (default "A").
+        start_row: Starting row number (1-indexed, optional).
+        end_col: Ending column (optional).
+        end_row: Ending row number (optional).
+
+    Returns:
+        A1 notation range string.
+
+    Examples:
+        >>> build_range_notation("Sheet1", "A", 1, "D", 10)
+        "'Sheet1'!A1:D10"
+        >>> build_range_notation("My Sheet", "A", end_col="Z")
+        "'My Sheet'!A:Z"
+    """
+    # Quote sheet name if it contains spaces or special characters
+    if " " in sheet_name or "'" in sheet_name or "!" in sheet_name:
+        # Escape single quotes by doubling them
+        escaped_name = sheet_name.replace("'", "''")
+        quoted_name = f"'{escaped_name}'"
+    else:
+        quoted_name = f"'{sheet_name}'"
+
+    # Build range parts
+    start_part = start_col
+    if start_row is not None:
+        start_part += str(start_row)
+
+    if end_col is not None or end_row is not None:
+        end_part = end_col or start_col
+        if end_row is not None:
+            end_part += str(end_row)
+        return f"{quoted_name}!{start_part}:{end_part}"
+    else:
+        return f"{quoted_name}!{start_part}"
+
+
+def parse_spreadsheet_id(url_or_id: str) -> str:
+    """
+    Extract spreadsheet ID from a Google Sheets URL or return the ID if already extracted.
+
+    Args:
+        url_or_id: Google Sheets URL or spreadsheet ID.
 
     Returns:
         The spreadsheet ID.
 
-    Raises:
-        ValueError: If the input is not a valid URL or ID.
-
     Examples:
-        >>> extract_spreadsheet_id("https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit")
-        '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'
-        >>> extract_spreadsheet_id("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms")
-        '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'
+        >>> parse_spreadsheet_id("https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit")
+        "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+        >>> parse_spreadsheet_id("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms")
+        "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
     """
-    if not url_or_id:
-        raise ValueError("Spreadsheet ID or URL cannot be empty")
-
-    # Try to extract from URL
-    url_patterns = [
-        r"https?://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)",
-        r"https?://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)/",
-    ]
-
-    for pattern in url_patterns:
-        match = re.search(pattern, url_or_id)
-        if match:
-            return match.group(1)
-
-    # Validate as direct ID
-    id_pattern = r"^[a-zA-Z0-9-_]+$"
-    if re.match(id_pattern, url_or_id):
+    # Check if it's already just an ID
+    if not url_or_id.startswith("http"):
         return url_or_id
 
-    raise ValueError(
-        f"Invalid spreadsheet ID or URL: {url_or_id}. "
-        "Expected a Google Sheets URL or alphanumeric ID."
-    )
+    # Parse URL
+    parsed = urlparse(url_or_id)
+
+    # Handle different URL formats
+    path_parts = parsed.path.split("/")
+
+    for i, part in enumerate(path_parts):
+        if part == "d" and i + 1 < len(path_parts):
+            return path_parts[i + 1]
+
+    # Try to extract from query parameters (some export URLs)
+    query_params = parse_qs(parsed.query)
+    if "id" in query_params:
+        return query_params["id"][0]
+
+    raise ValueError(f"Could not extract spreadsheet ID from: {url_or_id}")
 
 
-def sanitize_sheet_name(sheet_name: str) -> str:
+def infer_json_schema_type(value: Any) -> Dict[str, Any]:
     """
-    Sanitize a sheet name for use as a stream identifier.
-
-    Converts special characters to underscores and ensures
-    the name is valid for use as an identifier.
+    Infer JSON Schema type from a Python value.
 
     Args:
-        sheet_name: Original sheet name.
+        value: A Python value.
 
     Returns:
-        Sanitized sheet name.
-
-    Examples:
-        >>> sanitize_sheet_name("My Sheet 2024")
-        'my_sheet_2024'
-        >>> sanitize_sheet_name("Data & Analysis")
-        'data_analysis'
+        JSON Schema type definition.
     """
-    if not sheet_name:
-        return "unnamed_sheet"
+    if value is None:
+        return {"type": ["null", "string"]}
 
-    # Convert to lowercase
-    name = sheet_name.lower()
+    if isinstance(value, bool):
+        return {"type": ["null", "boolean"]}
 
-    # Replace spaces and special characters with underscores
-    name = re.sub(r"[^a-z0-9_]", "_", name)
+    if isinstance(value, int):
+        return {"type": ["null", "integer"]}
 
-    # Replace multiple underscores with single underscore
-    name = re.sub(r"_+", "_", name)
+    if isinstance(value, float):
+        return {"type": ["null", "number"]}
 
-    # Remove leading/trailing underscores
-    name = name.strip("_")
+    if isinstance(value, str):
+        # Check for date/time patterns
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+            return {"type": ["null", "string"], "format": "date"}
+        if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}", value):
+            return {"type": ["null", "string"], "format": "date-time"}
+        return {"type": ["null", "string"]}
 
-    # Ensure it doesn't start with a number
-    if name and name[0].isdigit():
-        name = f"sheet_{name}"
+    if isinstance(value, list):
+        return {"type": ["null", "array"], "items": {}}
 
-    # Ensure we have a valid name
-    if not name:
-        return "unnamed_sheet"
+    if isinstance(value, dict):
+        return {"type": ["null", "object"]}
 
-    return name
+    return {"type": ["null", "string"]}
 
 
-def normalize_header(header: str) -> str:
+def merge_schema_types(type1: Dict[str, Any], type2: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normalize a column header for use as a field name.
+    Merge two JSON Schema type definitions.
 
-    Converts to snake_case and ensures validity as a field name.
+    Used when inferring schema from multiple sample values.
 
     Args:
-        header: Original header value.
+        type1: First type definition.
+        type2: Second type definition.
 
     Returns:
-        Normalized header as a valid field name.
-
-    Examples:
-        >>> normalize_header("First Name")
-        'first_name'
-        >>> normalize_header("Email Address")
-        'email_address'
-        >>> normalize_header("")
-        'column_0'
+        Merged type definition.
     """
-    if not header or not header.strip():
-        return "unnamed_column"
+    # Handle null types
+    types1 = type1.get("type", [])
+    types2 = type2.get("type", [])
 
-    # Convert to lowercase
-    name = header.lower().strip()
+    if isinstance(types1, str):
+        types1 = [types1]
+    if isinstance(types2, str):
+        types2 = [types2]
 
-    # Replace common separators with underscore
-    name = re.sub(r"[\s\-./\\]", "_", name)
+    # Combine types, keeping null
+    combined = set(types1) | set(types2)
 
-    # Remove non-alphanumeric characters (except underscore)
-    name = re.sub(r"[^a-z0-9_]", "", name)
+    # Simplify: if we have both integer and number, keep number
+    if "integer" in combined and "number" in combined:
+        combined.discard("integer")
 
-    # Replace multiple underscores with single
-    name = re.sub(r"_+", "_", name)
+    # If we have multiple non-null types, fall back to string
+    non_null_types = combined - {"null"}
+    if len(non_null_types) > 1:
+        combined = {"null", "string"}
 
-    # Remove leading/trailing underscores
-    name = name.strip("_")
+    result = {"type": list(combined)}
 
-    # Ensure doesn't start with number
-    if name and name[0].isdigit():
-        name = f"col_{name}"
-
-    # Ensure we have a valid name
-    if not name:
-        return "unnamed_column"
-
-    return name
-
-
-def deduplicate_headers(headers: List[str]) -> List[str]:
-    """
-    Ensure all headers are unique by appending suffixes to duplicates.
-
-    Args:
-        headers: List of header values.
-
-    Returns:
-        List of unique header values.
-
-    Examples:
-        >>> deduplicate_headers(["name", "value", "name", "name"])
-        ['name', 'value', 'name_1', 'name_2']
-    """
-    seen: Dict[str, int] = {}
-    result: List[str] = []
-
-    for header in headers:
-        normalized = normalize_header(header)
-
-        if normalized in seen:
-            seen[normalized] += 1
-            new_name = f"{normalized}_{seen[normalized]}"
-            result.append(new_name)
-        else:
-            seen[normalized] = 0
-            result.append(normalized)
+    # Preserve format if both have it
+    if "format" in type1 and "format" in type2 and type1["format"] == type2["format"]:
+        result["format"] = type1["format"]
 
     return result
 
 
-def convert_value(value: Any, target_type: Optional[str] = None) -> Any:
+def infer_schema_from_values(
+    headers: List[str],
+    sample_rows: List[List[Any]],
+) -> Dict[str, Any]:
     """
-    Convert a cell value to the target type.
+    Infer JSON Schema from column headers and sample data.
 
     Args:
-        value: The value to convert.
-        target_type: Target type ("string", "integer", "number", "boolean").
+        headers: List of normalized column headers.
+        sample_rows: List of rows (each row is a list of values).
 
     Returns:
-        Converted value or original if conversion fails.
+        JSON Schema dictionary.
     """
-    if value is None or value == "":
-        return None
+    properties: Dict[str, Dict[str, Any]] = {}
 
-    if target_type is None:
-        return value
+    # Initialize with null types
+    for header in headers:
+        properties[header] = {"type": ["null", "string"]}
 
-    try:
-        if target_type == "integer":
-            # Handle percentage strings
-            if isinstance(value, str) and value.endswith("%"):
-                return int(float(value.rstrip("%")))
-            return int(float(value))
+    # Analyze sample values
+    for row in sample_rows:
+        for i, header in enumerate(headers):
+            if i < len(row):
+                value = row[i]
+                if value is not None and value != "":
+                    inferred = infer_json_schema_type(value)
+                    properties[header] = merge_schema_types(
+                        properties[header],
+                        inferred,
+                    )
 
-        elif target_type == "number":
-            if isinstance(value, str) and value.endswith("%"):
-                return float(value.rstrip("%")) / 100
-            return float(value)
-
-        elif target_type == "boolean":
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() in ("true", "yes", "1", "y")
-            return bool(value)
-
-        elif target_type == "string":
-            return str(value)
-
-    except (ValueError, TypeError):
-        pass
-
-    return value
-
-
-def infer_type(values: List[Any]) -> str:
-    """
-    Infer the data type from a sample of values.
-
-    Args:
-        values: Sample of values from a column.
-
-    Returns:
-        Inferred type string ("string", "integer", "number", "boolean").
-    """
-    if not values:
-        return "string"
-
-    # Filter out empty values
-    non_empty = [v for v in values if v not in (None, "", " ")]
-    if not non_empty:
-        return "string"
-
-    # Check for boolean
-    bool_values = {"true", "false", "yes", "no", "1", "0", "y", "n"}
-    if all(str(v).lower() in bool_values for v in non_empty):
-        return "boolean"
-
-    # Check for integer
-    try:
-        for v in non_empty:
-            int_val = int(float(str(v).rstrip("%")))
-            if int_val != float(str(v).rstrip("%")):
-                raise ValueError()
-        return "integer"
-    except (ValueError, TypeError):
-        pass
-
-    # Check for number
-    try:
-        for v in non_empty:
-            float(str(v).rstrip("%"))
-        return "number"
-    except (ValueError, TypeError):
-        pass
-
-    return "string"
-
-
-def generate_record_id(record: Dict[str, Any], keys: Optional[List[str]] = None) -> str:
-    """
-    Generate a unique ID for a record.
-
-    If keys are provided, uses those fields. Otherwise uses all fields.
-
-    Args:
-        record: The record dictionary.
-        keys: Optional list of key fields.
-
-    Returns:
-        MD5 hash string of the record.
-    """
-    if keys:
-        data = {k: record.get(k) for k in keys}
-    else:
-        data = record
-
-    # Create stable string representation
-    items = sorted(data.items())
-    content = "|".join(f"{k}:{v}" for k, v in items)
-
-    return hashlib.md5(content.encode()).hexdigest()
+    return {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
 
 
 def chunk_list(lst: List[Any], chunk_size: int) -> List[List[Any]]:
@@ -305,152 +289,97 @@ def chunk_list(lst: List[Any], chunk_size: int) -> List[List[Any]]:
     Returns:
         List of chunks.
 
-    Examples:
+    Example:
         >>> chunk_list([1, 2, 3, 4, 5], 2)
         [[1, 2], [3, 4], [5]]
     """
-    return [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]
+    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
 
 
-def format_a1_range(
-    sheet_name: str,
-    start_row: Optional[int] = None,
-    end_row: Optional[int] = None,
-    start_col: Optional[str] = None,
-    end_col: Optional[str] = None,
-) -> str:
+def safe_get(
+    data: Union[Dict[str, Any], List[Any]],
+    *keys: Union[str, int],
+    default: Any = None,
+) -> Any:
     """
-    Format an A1 notation range string.
+    Safely get a nested value from a dictionary or list.
 
     Args:
-        sheet_name: Name of the sheet.
-        start_row: Starting row number (1-indexed).
-        end_row: Ending row number (1-indexed).
-        start_col: Starting column letter.
-        end_col: Ending column letter.
+        data: Dictionary or list to traverse.
+        *keys: Keys or indices to follow.
+        default: Default value if path doesn't exist.
 
     Returns:
-        A1 notation range string.
+        Value at the specified path, or default.
 
-    Examples:
-        >>> format_a1_range("Sheet1", 1, 100)
-        "'Sheet1'!1:100"
-        >>> format_a1_range("Sheet1", 1, 100, "A", "Z")
-        "'Sheet1'!A1:Z100"
+    Example:
+        >>> data = {"a": {"b": [1, 2, 3]}}
+        >>> safe_get(data, "a", "b", 1)
+        2
+        >>> safe_get(data, "a", "c", default="not found")
+        "not found"
     """
-    # Quote sheet name if it contains spaces or special characters
-    if " " in sheet_name or any(c in sheet_name for c in "!':"):
-        quoted_name = f"'{sheet_name}'"
-    else:
-        quoted_name = sheet_name
-
-    # Build range
-    if start_col and end_col and start_row and end_row:
-        return f"{quoted_name}!{start_col}{start_row}:{end_col}{end_row}"
-    elif start_row and end_row:
-        return f"{quoted_name}!{start_row}:{end_row}"
-    elif start_col and end_col:
-        return f"{quoted_name}!{start_col}:{end_col}"
-    else:
-        return quoted_name
-
-
-def get_column_letter(index: int) -> str:
-    """
-    Convert a column index to a letter (A, B, ..., Z, AA, AB, ...).
-
-    Args:
-        index: 0-indexed column number.
-
-    Returns:
-        Column letter.
-
-    Examples:
-        >>> get_column_letter(0)
-        'A'
-        >>> get_column_letter(25)
-        'Z'
-        >>> get_column_letter(26)
-        'AA'
-    """
-    result = ""
-    index += 1  # Convert to 1-indexed
-
-    while index > 0:
-        index -= 1
-        result = chr(65 + (index % 26)) + result
-        index //= 26
-
-    return result
-
-
-def get_current_timestamp() -> str:
-    """
-    Get current UTC timestamp in ISO format.
-
-    Returns:
-        ISO formatted timestamp string.
-    """
-    return datetime.now(timezone.utc).isoformat()
-
-
-def safe_get(data: Dict[str, Any], *keys: str, default: Any = None) -> Any:
-    """
-    Safely get a nested value from a dictionary.
-
-    Args:
-        data: The dictionary to search.
-        *keys: Keys to traverse.
-        default: Default value if not found.
-
-    Returns:
-        The value at the nested path or default.
-
-    Examples:
-        >>> safe_get({"a": {"b": 1}}, "a", "b")
-        1
-        >>> safe_get({"a": {"b": 1}}, "a", "c", default=0)
-        0
-    """
-    result = data
+    current = data
     for key in keys:
         try:
-            result = result[key]
-        except (KeyError, TypeError, IndexError):
+            if isinstance(current, dict):
+                current = current.get(key, default)
+            elif isinstance(current, (list, tuple)):
+                current = current[key] if -len(current) <= key < len(current) else default
+            else:
+                return default
+            if current is default:
+                return default
+        except (KeyError, IndexError, TypeError):
             return default
-    return result
+    return current
 
 
-def flatten_dict(
-    data: Dict[str, Any],
-    separator: str = "_",
-    prefix: str = "",
-) -> Dict[str, Any]:
+def column_letter_to_index(letter: str) -> int:
     """
-    Flatten a nested dictionary.
+    Convert a column letter (A, B, ..., Z, AA, AB, ...) to a 0-based index.
 
     Args:
-        data: Dictionary to flatten.
-        separator: Separator for nested keys.
-        prefix: Prefix for all keys.
+        letter: Column letter(s) in A1 notation.
 
     Returns:
-        Flattened dictionary.
+        0-based column index.
 
-    Examples:
-        >>> flatten_dict({"a": {"b": 1, "c": 2}})
-        {'a_b': 1, 'a_c': 2}
+    Example:
+        >>> column_letter_to_index("A")
+        0
+        >>> column_letter_to_index("Z")
+        25
+        >>> column_letter_to_index("AA")
+        26
     """
-    items: List[tuple] = []
+    result = 0
+    for char in letter.upper():
+        result = result * 26 + (ord(char) - ord("A") + 1)
+    return result - 1
 
-    for key, value in data.items():
-        new_key = f"{prefix}{separator}{key}" if prefix else key
 
-        if isinstance(value, dict):
-            items.extend(
-                flatten_dict(value, separator=separator, prefix=new_key).items()
-            )
-        else:
-            items.append((new_key, value))
+def index_to_column_letter(index: int) -> str:
+    """
+    Convert a 0-based column index to a column letter.
 
-    return dict(items)
+    Args:
+        index: 0-based column index.
+
+    Returns:
+        Column letter(s) in A1 notation.
+
+    Example:
+        >>> index_to_column_letter(0)
+        "A"
+        >>> index_to_column_letter(25)
+        "Z"
+        >>> index_to_column_letter(26)
+        "AA"
+    """
+    result = ""
+    index += 1  # Convert to 1-based
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(ord("A") + remainder) + result
+    return result

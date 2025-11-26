@@ -1,64 +1,106 @@
-"""
-Syntax validation tests for Google Sheets connector source files.
-"""
+"""Syntax validation tests for Google Sheets connector source files."""
+
 import ast
 import os
-import py_compile
 import sys
-
 import pytest
 
-
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-SRC_DIR = os.path.join(BASE_DIR, 'src')
-
-
-def get_source_files():
-    """Get all Python source files in src directory."""
-    files = []
-    for filename in os.listdir(SRC_DIR):
-        if filename.endswith('.py'):
-            files.append(os.path.join(SRC_DIR, filename))
-    return files
+# Path to source files
+SRC_DIR = os.path.join(os.path.dirname(__file__), '..', 'src')
 
 
 class TestSyntaxValidation:
-    """Test Python syntax is valid in all source files."""
+    """Test that all Python source files have valid syntax."""
 
-    @pytest.mark.parametrize("filepath", get_source_files(), ids=lambda x: os.path.basename(x))
-    def test_py_compile(self, filepath):
-        """Test that each source file compiles without syntax errors."""
-        try:
-            py_compile.compile(filepath, doraise=True)
-        except py_compile.PyCompileError as e:
-            pytest.fail(f"Syntax error in {filepath}: {e}")
+    def get_source_files(self):
+        """Get all Python files in the src directory."""
+        py_files = []
+        for filename in os.listdir(SRC_DIR):
+            if filename.endswith('.py'):
+                py_files.append(os.path.join(SRC_DIR, filename))
+        return py_files
 
-    @pytest.mark.parametrize("filepath", get_source_files(), ids=lambda x: os.path.basename(x))
-    def test_ast_parse(self, filepath):
-        """Test that each source file can be parsed as valid Python AST."""
+    def test_connector_syntax(self):
+        """Test connector.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'connector.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
         try:
-            with open(filepath, 'r') as f:
-                source = f.read()
             ast.parse(source)
         except SyntaxError as e:
-            pytest.fail(f"AST parse error in {filepath}: {e}")
+            pytest.fail(f"Syntax error in connector.py: {e}")
 
-    def test_src_init_exists(self):
-        """Test that __init__.py exists in src directory."""
-        init_path = os.path.join(SRC_DIR, '__init__.py')
-        assert os.path.exists(init_path), f"Missing __init__.py in {SRC_DIR}"
+    def test_config_syntax(self):
+        """Test config.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'config.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in config.py: {e}")
 
-    def test_required_files_exist(self):
-        """Test that all required source files exist."""
-        required_files = [
-            '__init__.py',
-            'connector.py',
-            'config.py',
-            'auth.py',
-            'client.py',
-            'streams.py',
-            'utils.py',
-        ]
-        for filename in required_files:
-            filepath = os.path.join(SRC_DIR, filename)
-            assert os.path.exists(filepath), f"Missing required file: {filename}"
+    def test_auth_syntax(self):
+        """Test auth.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'auth.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in auth.py: {e}")
+
+    def test_client_syntax(self):
+        """Test client.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'client.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in client.py: {e}")
+
+    def test_streams_syntax(self):
+        """Test streams.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'streams.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in streams.py: {e}")
+
+    def test_utils_syntax(self):
+        """Test utils.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, 'utils.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in utils.py: {e}")
+
+    def test_init_syntax(self):
+        """Test __init__.py has valid syntax."""
+        filepath = os.path.join(SRC_DIR, '__init__.py')
+        with open(filepath, 'r') as f:
+            source = f.read()
+        try:
+            ast.parse(source)
+        except SyntaxError as e:
+            pytest.fail(f"Syntax error in __init__.py: {e}")
+
+    def test_all_files_have_valid_syntax(self):
+        """Test all Python files in src directory have valid syntax."""
+        errors = []
+        for filepath in self.get_source_files():
+            filename = os.path.basename(filepath)
+            try:
+                with open(filepath, 'r') as f:
+                    source = f.read()
+                ast.parse(source)
+            except SyntaxError as e:
+                errors.append(f"{filename}: {e}")
+
+        if errors:
+            pytest.fail(f"Syntax errors found:\n" + "\n".join(errors))

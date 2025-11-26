@@ -88,11 +88,47 @@ The system reads results ONLY from this file. Without it, your work is lost.
 
 ## WORKFLOW
 
-### Phase 1: Research (Use WebSearch)
-Search for testing patterns specific to this API:
-- "{API_NAME} python mock testing"
-- "{API_NAME} pytest httpretty mock"
-- "airbyte source-{connector} unit tests github"
+### Phase 1: Research Mocking Strategies (CRITICAL - Use WebSearch)
+
+**Before writing ANY mock code**, you MUST research how to properly mock the specific libraries used by this connector.
+
+#### Step 1.1: Identify the API Client Library
+Read `src/client.py` and `requirements.txt` to identify:
+- What HTTP client library is used? (requests, httpx, aiohttp, httplib2)
+- What SDK is used? (googleapiclient, boto3, stripe, twilio, etc.)
+- What authentication library? (google-auth, oauthlib, etc.)
+
+#### Step 1.2: Search for Library-Specific Mocking Patterns
+Use WebSearch to find the CORRECT way to mock this specific library:
+
+For Google APIs (googleapiclient):
+- Search: "how to mock googleapiclient discovery build pytest"
+- Search: "googleapiclient HttpMock HttpMockSequence example"
+- Search: "mock google-api-python-client unit test"
+- **KEY INSIGHT**: googleapiclient uses httplib2 internally. You often need to mock at the httplib2 level OR use the library's built-in HttpMock.
+
+For AWS (boto3):
+- Search: "mock boto3 pytest moto"
+- Search: "botocore stubber example"
+
+For Stripe:
+- Search: "mock stripe python pytest"
+- Search: "stripe-mock docker testing"
+
+For generic REST APIs:
+- Search: "responses library pytest mock requests"
+- Search: "httpretty mock http python"
+
+#### Step 1.3: Understand the Mock Architecture
+When mocking SDKs like googleapiclient, understand the call chain:
+```
+Your Code → SDK Client → HTTP Library → Network
+                ↑
+         Mock at this level (SDK) is easier than mocking HTTP
+```
+
+**IMPORTANT**: Many SDKs have internal HTTP handling that returns tuples like `(response, content)`.
+If you see errors like "cannot unpack non-iterable Mock object", you're mocking at the wrong level.
 
 ### Phase 2: Understand the Connector (Read Source Code)
 BEFORE writing any tests, you MUST read:
@@ -100,7 +136,7 @@ BEFORE writing any tests, you MUST read:
 2. `src/connector.py` - Find the exact class name and method signatures
 3. `src/config.py` - Understand configuration structure and validation
 4. `src/auth.py` - Understand authentication requirements
-5. `src/client.py` - Understand API interactions to mock
+5. `src/client.py` - **CRITICAL**: Understand API client internals to mock correctly
 6. `src/streams.py` - Understand data stream definitions
 
 ### Phase 3: Setup Environment
@@ -137,13 +173,13 @@ except Exception as e:
 # Repeat for each module
 ```
 
-### Phase 6: Create Test Suite
+### Phase 6: Create Test Suite with PROPER Mocking
 
 #### Directory Structure:
 ```
 tests/
 ├── __init__.py
-├── conftest.py              # Shared fixtures with mocks
+├── conftest.py              # Shared fixtures with PROPERLY RESEARCHED mocks
 ├── test_syntax.py           # Syntax validation
 ├── test_imports.py          # Import validation
 ├── test_config.py           # Configuration tests
@@ -154,69 +190,77 @@ tests/
 └── pytest.ini
 ```
 
-#### conftest.py Template (CRITICAL - Mock Setup):
+#### MOCKING STRATEGY BY LIBRARY TYPE:
+
+##### For Google APIs (googleapiclient) - USE THIS PATTERN:
 ```python
 import pytest
-import httpretty
-import json
-import re
-import sys
-import os
-
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-# Generate valid RSA key for Google Service Account tests
-@pytest.fixture(scope="session", autouse=True)
-def generate_test_key():
-    import subprocess
-    subprocess.run([
-        'openssl', 'genpkey', '-algorithm', 'RSA',
-        '-out', '/tmp/test_private_key.pem',
-        '-pkeyopt', 'rsa_keygen_bits:2048'
-    ], capture_output=True)
-
-    with open('/tmp/test_private_key.pem', 'r') as f:
-        return f.read()
+from unittest.mock import Mock, patch, MagicMock
 
 @pytest.fixture
-def valid_private_key():
-    try:
-        with open('/tmp/test_private_key.pem', 'r') as f:
-            return f.read()
-    except:
-        return "-----BEGIN PRIVATE KEY-----\\nMIIE...fake...\\n-----END PRIVATE KEY-----"
+def mock_sheets_api(mock_spreadsheet_metadata, mock_values_response):
+    \"\"\"
+    Mock Google Sheets API at the correct level.
 
-@pytest.fixture
-def mock_oauth_token():
-    return {
-        "access_token": "mock-access-token-12345",
-        "token_type": "Bearer",
-        "expires_in": 3600
-    }
+    KEY: Mock the service methods directly, ensuring execute() returns data.
+    DO NOT try to mock httplib2 internals unless you return proper tuples.
+    \"\"\"
+    with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds, \\
+         patch('googleapiclient.discovery.build') as mock_build:
+
+        # Setup credentials mock
+        mock_credentials = MagicMock()
+        mock_credentials.valid = True
+        mock_credentials.expired = False
+        mock_credentials.token = "mock-access-token"
+        mock_credentials.universe_domain = "googleapis.com"
+        mock_credentials.refresh = Mock()
+        mock_creds.return_value = mock_credentials
+
+        # Setup service mock - this is the KEY part
+        mock_service = MagicMock()
+
+        # Mock the ENTIRE chain: service.spreadsheets().get().execute()
+        mock_spreadsheets = MagicMock()
+        mock_service.spreadsheets.return_value = mock_spreadsheets
+
+        # For spreadsheets().get()
+        mock_get_request = MagicMock()
+        mock_get_request.execute.return_value = mock_spreadsheet_metadata
+        mock_spreadsheets.get.return_value = mock_get_request
+
+        # For spreadsheets().values().get()
+        mock_values = MagicMock()
+        mock_spreadsheets.values.return_value = mock_values
+
+        mock_values_request = MagicMock()
+        mock_values_request.execute.return_value = mock_values_response
+        mock_values.get.return_value = mock_values_request
+
+        mock_build.return_value = mock_service
+
+        yield {'service': mock_service, 'credentials': mock_creds, 'build': mock_build}
+```
+
+##### For requests-based APIs:
+```python
+import responses
 
 @pytest.fixture
 def mock_api():
-    httpretty.enable(verbose=True, allow_net_connect=False)
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.GET, "https://api.example.com/data",
+                 json={"data": "value"}, status=200)
+        yield rsps
+```
 
-    # Mock OAuth2 token endpoint (Google)
-    httpretty.register_uri(
-        httpretty.POST,
-        "https://oauth2.googleapis.com/token",
-        body=json.dumps({
-            "access_token": "mock-token",
-            "token_type": "Bearer",
-            "expires_in": 3600
-        }),
-        content_type="application/json"
-    )
+##### For httpx-based APIs:
+```python
+import httpx
+from pytest_httpx import HTTPXMock
 
-    # ADD API-SPECIFIC MOCKS HERE based on what you learned from source code
-
-    yield httpretty
-
-    httpretty.disable()
-    httpretty.reset()
+def test_api_call(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(json={"data": "value"})
 ```
 
 ### Phase 7: Run Tests
@@ -225,27 +269,54 @@ source venv/bin/activate
 python -m pytest tests/ -v --tb=long 2>&1 | tee pytest_output.txt
 ```
 
-### Phase 8: WRITE RESULTS (MANDATORY)
+### Phase 8: ERROR PATTERN RECOGNITION AND FIXES
+
+If tests fail, recognize these common error patterns:
+
+#### Pattern 1: "cannot unpack non-iterable Mock object"
+**Cause**: Mocking at wrong level. The underlying HTTP library expects `(response, content)` tuple.
+**Fix**: Mock at the SDK level (e.g., `service.spreadsheets().get().execute()`) instead of HTTP level.
+
+#### Pattern 2: "UniverseMismatchError" or "universe_domain"
+**Cause**: Google API client version >= 2.100.0 validates universe_domain on credentials.
+**Fix**: Add `mock_credentials.universe_domain = "googleapis.com"` to your credential mock.
+
+#### Pattern 3: "AttributeError: Mock object has no attribute 'xxx'"
+**Cause**: MagicMock doesn't auto-create the attribute chain you need.
+**Fix**: Explicitly set up the full method chain: `mock.method1.return_value.method2.return_value = value`
+
+#### Pattern 4: "TypeError: 'Mock' object is not subscriptable"
+**Cause**: Trying to index a Mock like `mock['key']`.
+**Fix**: Use `MagicMock` instead of `Mock`, or set `mock.__getitem__.return_value = value`.
+
+#### Pattern 5: Import errors with Google libraries
+**Cause**: Missing google-auth, google-api-python-client, etc.
+**Fix**: Ensure requirements.txt includes all needed packages and they're installed.
+
+### Phase 9: WRITE RESULTS (MANDATORY)
 After pytest completes, IMMEDIATELY use the Write tool to create `tests/test_results.json`.
 Parse the pytest output and create a detailed report.
 
-## KEY TESTING PATTERNS
+## ESCALATION PATH
 
-### For Google APIs (Sheets, Drive, etc.):
-- Mock `https://oauth2.googleapis.com/token` for OAuth
-- Mock `https://sheets.googleapis.com/v4/spreadsheets/*` for API calls
-- Use real RSA keys (generate with openssl) - Google validates key format
-- Use httpretty with regex patterns for URL matching
+If your mocking approach isn't working after 2 attempts:
 
-### For REST APIs with API Keys:
-- No OAuth mock needed
-- Just mock the API endpoints
-- Pass API key in headers or query params
+1. **Level 1**: Mock at SDK/service level (recommended)
+   - Mock `build()` to return a mock service
+   - Mock service methods directly
 
-### For Pydantic Validation Issues:
-- Test that invalid configs raise ValidationError
-- Test discriminator fields use Literal types
-- Test required vs optional fields
+2. **Level 2**: Mock the connector's client methods directly
+   - Instead of mocking Google API, mock `GoogleSheetsClient.get_spreadsheet()`
+   - This bypasses SDK complexity entirely
+
+3. **Level 3**: Use library-provided test utilities
+   - Google: `googleapiclient.http.HttpMock` or `HttpMockSequence`
+   - AWS: `moto` library or `botocore.stub.Stubber`
+   - Search for "{library} official testing utilities"
+
+4. **Level 4**: Mock at the connector level
+   - Mock the entire client class
+   - Test business logic in isolation
 
 ## COMMON BUGS TO LOOK FOR
 
@@ -257,11 +328,13 @@ Parse the pytest output and create a detailed report.
 6. **Authentication Issues**: Token refresh logic, credential validation
 
 ## REMEMBER
-- Read the source code FIRST before writing tests
-- Use WebSearch to find API-specific mocking patterns
+- **RESEARCH FIRST**: Use WebSearch to find correct mocking patterns for the specific libraries
+- Read the source code to understand what needs to be mocked
+- Mock at the highest level possible (SDK > HTTP > Network)
 - Generate real RSA keys for Google APIs
 - ALWAYS write test_results.json at the end
 - Include specific error messages so the generator can fix them
+- If stuck, escalate to a higher-level mocking strategy
 """
 
     # System prompt for RERUN mode (just re-run existing tests)
@@ -344,41 +417,157 @@ After fixing and running tests, you MUST write `tests/test_results.json`.
 
 ## WORKFLOW
 
-### Step 1: Read the TestReviewer Feedback
-Understand WHY the tests were marked as invalid:
-- Are the mocks incorrect?
-- Are the assertions testing wrong behavior?
-- Are there import issues in the tests?
-- Are there wrong assumptions about the API?
+### Step 1: Analyze the Error Pattern (CRITICAL)
 
-### Step 2: Read the Connector Source Code
+First, identify WHAT KIND of error you're dealing with:
+
+#### Error Pattern 1: "cannot unpack non-iterable Mock object"
+**Root Cause**: The mock is at the wrong level. The SDK's HTTP layer expects `(response, content)` tuple.
+**Solution**: Don't mock HTTP internals. Mock at the SDK service level instead.
+**Search**: "how to mock {library_name} pytest" to find correct approach.
+
+#### Error Pattern 2: "UniverseMismatchError" or "universe_domain"
+**Root Cause**: Google API client >= 2.100.0 validates universe_domain attribute on credentials.
+**Solution**: Add `mock_credentials.universe_domain = "googleapis.com"` to credential mock.
+
+#### Error Pattern 3: "AttributeError: Mock object has no attribute 'xxx'"
+**Root Cause**: Mock chain not properly set up.
+**Solution**: Explicitly define: `mock.method1.return_value.method2.return_value.execute.return_value = data`
+
+#### Error Pattern 4: "TypeError: 'Mock' object is not subscriptable"
+**Root Cause**: Code tries `mock['key']` but Mock doesn't support indexing.
+**Solution**: Use MagicMock instead, or set `mock.__getitem__.return_value = value`.
+
+#### Error Pattern 5: Tests pass but wrong behavior tested
+**Root Cause**: Assertions don't match actual connector behavior.
+**Solution**: Read connector source code carefully and update assertions.
+
+### Step 2: Research the Correct Mocking Strategy (Use WebSearch)
+
+**BEFORE attempting fixes**, search for the correct approach:
+
+For Google APIs (googleapiclient):
+- Search: "how to mock googleapiclient discovery build pytest"
+- Search: "googleapiclient HttpMock example python"
+- Search: "mock google sheets api python unit test"
+
+For AWS (boto3):
+- Search: "moto mock boto3 pytest"
+- Search: "botocore stubber example"
+
+For requests-based APIs:
+- Search: "responses library pytest mock"
+- Search: "httpretty mock requests python"
+
+**KEY INSIGHT**: Most SDK mocking issues come from trying to mock too low in the stack.
+Mock the SDK's service methods, not the HTTP layer.
+
+### Step 3: Read the Connector Source Code
 Understand what the connector ACTUALLY does:
-- `src/connector.py` - Main connector class
+- `src/connector.py` - Main connector class and methods
 - `src/config.py` - Configuration structure
-- `src/client.py` - API client behavior
+- `src/client.py` - **CRITICAL**: See exactly how API calls are made
+- `src/auth.py` - Authentication flow
 - `src/streams.py` - Stream definitions
 
-### Step 3: Fix the Test Files
-Use Edit tool to fix issues in:
-- `tests/conftest.py` - Fix mock setup
-- `tests/test_*.py` - Fix test assertions and expectations
+### Step 4: Fix Using the ESCALATION PATH
 
-### Step 4: Run Tests
+Try fixes in this order (escalate if one doesn't work):
+
+#### Level 1: Fix Mock Configuration (Most Common)
+```python
+# WRONG - mocking too deep
+with patch('httplib2.Http.request') as mock:
+    mock.return_value = (response, content)  # Often breaks
+
+# RIGHT - mock at SDK level
+with patch('googleapiclient.discovery.build') as mock_build:
+    mock_service = MagicMock()
+    mock_service.spreadsheets.return_value.get.return_value.execute.return_value = data
+    mock_build.return_value = mock_service
+```
+
+#### Level 2: Mock the Connector's Client Methods
+If SDK mocking is complex, mock one level higher:
+```python
+# Instead of mocking Google API, mock the connector's client
+with patch.object(GoogleSheetsClient, 'get_spreadsheet') as mock_get:
+    mock_get.return_value = spreadsheet_metadata
+```
+
+#### Level 3: Use Library-Provided Test Utilities
+Search for official testing tools:
+- Google: `googleapiclient.http.HttpMock`, `HttpMockSequence`
+- AWS: `moto` library
+- Stripe: `stripe-mock`
+
+#### Level 4: Mock at Connector Level
+If all else fails, mock the entire client:
+```python
+with patch('src.connector.GoogleSheetsClient') as MockClient:
+    mock_instance = MockClient.return_value
+    mock_instance.get_spreadsheet.return_value = metadata
+```
+
+### Step 5: Apply the Fix
+
+Use the Edit tool to fix:
+- `tests/conftest.py` - Fix mock fixtures
+- `tests/test_*.py` - Fix test logic and assertions
+
+### Step 6: Run Tests
 ```bash
 cd {connector_dir}
 source venv/bin/activate
 python -m pytest tests/ -v --tb=long 2>&1
 ```
 
-### Step 5: Iterate (Max 3 Attempts)
-If tests still fail after fixes:
-1. Analyze the new errors
-2. Fix the issues
-3. Re-run tests
-4. Repeat up to 3 times
+### Step 7: Iterate with Escalation (Max 3 Attempts)
 
-### Step 6: WRITE RESULTS (MANDATORY)
+**Attempt 1**: Try Level 1 fix (fix mock configuration)
+**Attempt 2**: If same error, escalate to Level 2 (mock client methods)
+**Attempt 3**: If still failing, escalate to Level 3 or 4 (higher-level mocking)
+
+**IMPORTANT**: Don't repeat the same fix. If an approach isn't working, ESCALATE to a different strategy.
+
+### Step 8: WRITE RESULTS (MANDATORY)
 Write `tests/test_results.json` with detailed results.
+
+## GOOGLE API SPECIFIC FIXES
+
+If testing a Google API connector (Sheets, Drive, Gmail, etc.):
+
+### Correct Mock Pattern for googleapiclient:
+```python
+@pytest.fixture
+def mock_sheets_api():
+    with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds, \\
+         patch('googleapiclient.discovery.build') as mock_build:
+
+        # Credentials mock with universe_domain (required for newer versions)
+        mock_credentials = MagicMock()
+        mock_credentials.valid = True
+        mock_credentials.expired = False
+        mock_credentials.universe_domain = "googleapis.com"  # CRITICAL
+        mock_credentials.token = "mock-token"
+        mock_creds.return_value = mock_credentials
+
+        # Service mock - mock the FULL chain
+        mock_service = MagicMock()
+
+        # spreadsheets().get().execute() chain
+        mock_get = MagicMock()
+        mock_get.execute.return_value = {"spreadsheetId": "123", "sheets": [...]}
+        mock_service.spreadsheets.return_value.get.return_value = mock_get
+
+        # spreadsheets().values().get().execute() chain
+        mock_values_get = MagicMock()
+        mock_values_get.execute.return_value = {"values": [["A", "B"], [1, 2]]}
+        mock_service.spreadsheets.return_value.values.return_value.get.return_value = mock_values_get
+
+        mock_build.return_value = mock_service
+        yield mock_service
+```
 
 ## COMMON TEST ISSUES TO FIX
 
@@ -390,10 +579,12 @@ Write `tests/test_results.json` with detailed results.
 6. **Configuration Mismatch**: Test config doesn't match actual config schema
 
 ## REMEMBER
-- The connector code is CORRECT
-- Fix the TESTS to match the connector behavior
+- **RESEARCH FIRST**: Use WebSearch to find correct mocking patterns
+- The connector code is CORRECT - only fix TESTS
+- **ESCALATE** if an approach isn't working - don't repeat failed attempts
+- Mock at the highest level possible (SDK > HTTP > Network)
 - Run tests after each fix to verify
-- Max 3 fix attempts
+- Max 3 fix attempts with escalation between each
 - ALWAYS write test_results.json
 """
 
@@ -501,9 +692,9 @@ Write `tests/test_results.json` with detailed results.
                 allowed_tools = ["Read", "Write", "Bash"]
                 max_turns = 15  # Quick mode
             elif mode == TesterMode.FIX:
-                # FIX needs Edit to fix tests
-                allowed_tools = ["Read", "Write", "Edit", "Bash"]
-                max_turns = 40  # Medium mode
+                # FIX needs Edit to fix tests AND WebSearch to research correct mocking strategies
+                allowed_tools = ["Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch"]
+                max_turns = 50  # Medium-high mode (research takes time)
             else:  # GENERATE
                 # Full tools for test creation
                 allowed_tools = ["Read", "Write", "Bash", "WebSearch", "WebFetch"]

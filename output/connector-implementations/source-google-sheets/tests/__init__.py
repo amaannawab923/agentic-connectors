@@ -1,1 +1,1 @@
-"""Test suite for google-sheets connector."""
+"""Test suite for Google Sheets connector."""

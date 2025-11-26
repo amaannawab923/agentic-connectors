@@ -1,22 +1,20 @@
 # Google Sheets Source Connector Dependencies
 
-# Google API Client Libraries
+# Google API client libraries
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
-google-auth-oauthlib>=1.1.0
 google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
 
-# Configuration and Validation
+# Configuration and validation
 pydantic>=2.5.0
 
-# HTTP handling (included with google-api-python-client but explicitly listed)
+# HTTP and networking
 httplib2>=0.22.0
-uritemplate>=4.1.1
+requests>=2.31.0
 
-# Development and Testing (optional, uncomment if needed)
-# pytest>=7.4.0
-# pytest-cov>=4.1.0
-# pytest-mock>=3.12.0
-# black>=23.0.0
-# mypy>=1.6.0
-# isort>=5.12.0
+# Type hints (for development)
+typing-extensions>=4.8.0
+
+# Logging and utilities
+python-dateutil>=2.8.2
