@@ -66,33 +66,50 @@ Your job is to discover what's wrong so it can be fixed.
 
 You have a MAXIMUM of 40 turns to complete testing. Use them wisely:
 
-**Turns 1-5: Quick Validation (REQUIRED)**
+**Turns 1-3: Quick Validation (REQUIRED)**
 - Syntax validation (py_compile all source files)
 - Import tests (verify all modules load)
 - Config tests (Pydantic model validation)
-- MUST complete within 5 turns
+- MUST complete within 3 turns
 
-**Turns 6-20: Progressive Mocking Strategy (MAX 15 turns)**
-Try each mocking level for MAX 5 turns. If unsuccessful, ESCALATE to next level:
+**Turns 4-5: Verify Mock Fixtures (MockGenerator Output)** ✅
+- **IMPORTANT**: The MockGenerator agent has already created fixtures and conftest.py
+- Read `tests/fixtures/` directory to see available fixtures
+- Read `tests/conftest.py` to understand fixture definitions
+- Verify fixtures match test requirements
+- If fixtures are incomplete/incorrect, you can update them in FIX mode
 
-**Level 1 (Turns 6-10)**: SDK-Level Mocking
-- Mock at `googleapiclient.discovery.build` / `boto3.client` level
-- Mock service methods directly (e.g., `service.spreadsheets().get().execute()`)
-- If 2 failed attempts → ESCALATE to Level 2
+**Turns 6-15: Test Generation Using Existing Fixtures**
+Write tests that USE the fixtures created by MockGenerator:
 
-**Level 2 (Turns 11-15)**: Library Test Utilities
-- Use library-provided mocking: `HttpMock`, `moto`, `responses`
-- Search for "{library} official testing utilities"
-- If 2 failed attempts → ESCALATE to Level 3
+**Turns 6-8**: Connection Tests
+- Write `test_connection.py` using `mock_google_credentials` fixture
+- Test successful connections with valid credentials
+- Test connection failures with invalid credentials
+- Use fixtures from `tests/conftest.py` - they're already defined!
 
-**Level 3 (Turns 16-20)**: Connector Client Mocking
-- Mock at connector's client class level (e.g., `mock GoogleSheetsClient.get_spreadsheet()`)
-- Bypass SDK complexity entirely
-- This ALWAYS works - use simple Mock/MagicMock
+**Turns 9-12**: Data Reading Tests
+- Write `test_read.py` using success response fixtures
+- Test reading data from API using fixture responses
+- Test pagination, filtering, transformations
+- Use fixtures like `test_spreadsheet_metadata`, `test_sheet_values`
 
-**Turns 21-25: Test Execution & Result Writing**
-- Run final test suite
-- Parse results
+**Turns 13-15**: Error Handling Tests
+- Write `test_errors.py` using error fixtures
+- Test 401, 403, 404, 429, 500 error handling
+- Use error fixtures from `tests/fixtures/responses/errors/`
+- Verify connector handles errors gracefully
+
+**Turns 16-20: Test Execution & Debugging**
+- Run test suite: `pytest tests/ -v --tb=short`
+- Fix any test failures
+- Ensure tests use fixtures correctly
+- Debug import errors, fixture loading issues
+
+**Turns 21-25: Final Validation & Result Writing**
+- Run complete test suite
+- Parse results and write test_results.json
+- Generate comprehensive test report
 - Write test_results.json
 
 **Turns 26-40: EMERGENCY BUFFER**
@@ -133,9 +150,60 @@ The system reads results ONLY from this file. Without it, your work is lost.
 
 ## WORKFLOW
 
-### Phase 1: Research Mocking Strategies (CRITICAL - Use WebSearch)
+### Phase 0: Understand Existing Fixtures (CRITICAL - 2 turns max) ✅
 
-**Before writing ANY mock code**, you MUST research how to properly mock the specific libraries used by this connector.
+**IMPORTANT**: The MockGenerator agent has ALREADY created fixtures and conftest.py for you!
+
+**Turn 1: Read Fixture Metadata from State**
+```python
+# You will receive fixture information in the execution context:
+# - mock_generation_output: Dict with fixture metadata
+# - fixtures_created: List of fixture file paths
+# - fixtures_dir: Path to tests/fixtures/
+# - conftest_path: Path to tests/conftest.py
+
+# Example fixture metadata you'll receive:
+{
+    "fixtures_dir": "tests/fixtures",
+    "conftest_path": "tests/conftest.py",
+    "fixture_count": 10,
+    "fixture_files": [
+        "tests/fixtures/auth/service_account.json",
+        "tests/fixtures/auth/oauth2_credentials.json",
+        "tests/fixtures/responses/success/spreadsheet_metadata.json",
+        # ... etc
+    ]
+}
+```
+
+**Turn 2: Verify Fixture Completeness**
+```bash
+# Read conftest.py to see available fixtures
+cat tests/conftest.py
+
+# List all fixture JSON files
+find tests/fixtures -name "*.json"
+
+# Verify key fixtures exist:
+# - Auth fixtures (service account, oauth2)
+# - Success response fixtures (metadata, values, etc.)
+# - Error fixtures (401, 403, 404, 429, 500)
+```
+
+**What MockGenerator Created:**
+- ✅ `tests/fixtures/` directory with organized JSON fixtures
+- ✅ `tests/conftest.py` with pytest fixture definitions
+- ✅ Complete mock objects with all required attributes (universe_domain, scopes, etc.)
+- ✅ Realistic API response data matching the connector's API
+
+**Your Job:**
+- ✅ READ the existing fixtures, don't recreate them
+- ✅ WRITE tests that USE these fixtures
+- ✅ UPDATE fixtures ONLY if they're incorrect (in FIX mode)
+
+### Phase 1: Research Testing Patterns (OPTIONAL - Use WebSearch if needed)
+
+**Only if you need additional context** for writing tests (fixtures are already created).
 
 #### Step 1.1: Identify the API Client Library
 Read `src/client.py` and `requirements.txt` to identify:
@@ -244,12 +312,12 @@ from unittest.mock import Mock, patch, MagicMock
 
 @pytest.fixture
 def mock_sheets_api(mock_spreadsheet_metadata, mock_values_response):
-    \"\"\"
+    '''
     Mock Google Sheets API at the correct level.
 
     KEY: Mock the service methods directly, ensuring execute() returns data.
     DO NOT try to mock httplib2 internals unless you return proper tuples.
-    \"\"\"
+    '''
     with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds, \\
          patch('googleapiclient.discovery.build') as mock_build:
 
@@ -293,12 +361,12 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def mock_google_sheets_client():
-    """
+    '''
     Mock at the connector's client level - simpler and always reliable.
 
     This bypasses all SDK complexity and mocks the connector's own client class.
     Use this when SDK-level mocking becomes too complex.
-    """
+    '''
     with patch('src.client.GoogleSheetsClient') as MockClient:
         # Create mock client instance
         mock_client = MagicMock()

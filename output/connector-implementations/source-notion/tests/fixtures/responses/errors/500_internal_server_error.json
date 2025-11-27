@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 500,
+  "code": "internal_server_error",
+  "message": "An unexpected error occurred. Please try again."
+}

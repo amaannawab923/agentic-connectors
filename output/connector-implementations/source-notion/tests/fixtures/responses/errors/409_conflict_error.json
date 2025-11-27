@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 409,
+  "code": "conflict_error",
+  "message": "The transaction could not be completed because of a conflict with the current state of the resource."
+}

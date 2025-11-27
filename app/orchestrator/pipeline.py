@@ -50,15 +50,16 @@ from .state import (
 )
 from .config import settings
 
-# Real agents for research, generator, tester, and test_reviewer
+# Real agents for research, generator, mock_generator, tester, and test_reviewer
 from .nodes.real_agents import (
     research_node,
     generator_node,
+    mock_generator_node,
     tester_node,
     test_reviewer_node,
 )
 
-# Mock agents for reviewer, publisher (to be integrated later)
+# Mock agents for reviewer and publisher (temporarily using mock for publisher)
 from .nodes.mock_agents import (
     reviewer_node,
     publisher_node,
@@ -178,6 +179,52 @@ async def close_checkpointer():
 # Routing Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+def route_after_generator(state: PipelineState) -> Literal["mock_generator", "tester"]:
+    """Route after Generator - conditionally run MockGenerator or go directly to Tester.
+
+    Decision logic:
+    - If fixtures already exist (tests/fixtures/ AND tests/conftest.py) -> skip to "tester"
+    - If this is a retry loop (gen_fix_retries > 0) -> skip to "tester"
+    - Otherwise (first generation, no fixtures) -> run "mock_generator"
+
+    Args:
+        state: Current pipeline state
+
+    Returns:
+        "mock_generator" if fixtures need to be created, else "tester"
+    """
+    from pathlib import Path
+
+    connector_dir = state.get("connector_dir", "")
+    gen_fix_retries = state.get("gen_fix_retries", 0)
+
+    # If we don't have a connector_dir yet, go to mock_generator (it will handle the error)
+    if not connector_dir:
+        logger.info("[ROUTE] No connector_dir, routing to mock_generator")
+        return "mock_generator"
+
+    # Check if fixtures already exist
+    connector_path = Path(connector_dir)
+    fixtures_dir = connector_path / "tests" / "fixtures"
+    conftest_path = connector_path / "tests" / "conftest.py"
+
+    fixtures_exist = fixtures_dir.exists() and conftest_path.exists()
+
+    # If this is a retry loop (Generator fixing code after test failures), skip MockGenerator
+    if gen_fix_retries > 0:
+        logger.info(f"[ROUTE] gen_fix_retries={gen_fix_retries}, skipping mock_generator -> tester")
+        return "tester"
+
+    # If fixtures already exist, skip MockGenerator
+    if fixtures_exist:
+        logger.info(f"[ROUTE] Fixtures already exist at {fixtures_dir}, skipping mock_generator -> tester")
+        return "tester"
+
+    # First generation, no fixtures - run MockGenerator
+    logger.info(f"[ROUTE] First generation, no fixtures found -> mock_generator")
+    return "mock_generator"
+
+
 def route_after_test_review(state: PipelineState) -> Literal["tester", "generator", "reviewer", "failed"]:
     """Route after TestReviewer based on test validity and code pass/fail.
 
@@ -187,16 +234,16 @@ def route_after_test_review(state: PipelineState) -> Literal["tester", "generato
         - VALID+PASS -> reviewer
         - Max retries exceeded -> failed
     """
-    # Check for fatal errors
-    if state.get("errors"):
-        logger.warning(f"Pipeline has fatal errors: {state['errors']}")
-        return "failed"
-
     decision = state.get("test_review_decision")
     test_retries = state.get("test_retries", 0)
     gen_fix_retries = state.get("gen_fix_retries", 0)
     max_test_retries = state.get("max_test_retries", 3)
     max_gen_fix_retries = state.get("max_gen_fix_retries", 3)
+
+    # VALID+PASS -> proceed to Reviewer (check this first, ignore old errors if tests passed)
+    if decision == TestReviewDecision.VALID_PASS.value:
+        logger.info("Tests VALID and PASSED -> routing to reviewer")
+        return "reviewer"
 
     # INVALID tests -> back to Tester
     if decision == TestReviewDecision.INVALID.value:
@@ -214,10 +261,10 @@ def route_after_test_review(state: PipelineState) -> Literal["tester", "generato
         logger.info(f"Tests VALID but FAILED (retry {gen_fix_retries}/{max_gen_fix_retries}) -> routing to generator")
         return "generator"
 
-    # VALID+PASS -> proceed to Reviewer
-    if decision == TestReviewDecision.VALID_PASS.value:
-        logger.info("Tests VALID and PASSED -> routing to reviewer")
-        return "reviewer"
+    # Check for fatal errors only if we haven't already routed successfully
+    if state.get("errors"):
+        logger.warning(f"Pipeline has fatal errors: {state['errors']}")
+        return "failed"
 
     # Unknown decision - shouldn't happen
     logger.error(f"Unknown test_review_decision: {decision}")
@@ -335,6 +382,7 @@ def build_pipeline() -> StateGraph:
     # ─────────────────────────────────────────────────────────────
     workflow.add_node("research", research_node)
     workflow.add_node("generator", generator_node)
+    workflow.add_node("mock_generator", mock_generator_node)
     workflow.add_node("tester", tester_node)
     workflow.add_node("test_reviewer", test_reviewer_node)
     workflow.add_node("reviewer", reviewer_node)
@@ -350,7 +398,20 @@ def build_pipeline() -> StateGraph:
     # Add Sequential Edges (happy path)
     # ─────────────────────────────────────────────────────────────
     workflow.add_edge("research", "generator")
-    workflow.add_edge("generator", "tester")
+
+    # Conditional edge after generator - route to mock_generator or tester
+    workflow.add_conditional_edges(
+        "generator",
+        route_after_generator,
+        {
+            "mock_generator": "mock_generator",  # First run - generate fixtures
+            "tester": "tester",                   # Retry loop - skip fixture generation
+        }
+    )
+
+    # MockGenerator always goes to Tester
+    workflow.add_edge("mock_generator", "tester")
+
     workflow.add_edge("tester", "test_reviewer")
 
     # ─────────────────────────────────────────────────────────────

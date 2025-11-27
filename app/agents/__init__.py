@@ -4,6 +4,7 @@ This module provides agents for connector generation:
 - BaseAgent: Abstract base class with Anthropic API client
 - ResearchAgent: API documentation research
 - GeneratorAgent: Code generation
+- MockGeneratorAgent: Mock fixture generation
 - TesterAgent: Test execution
 - ReviewerAgent: Code review
 - PublisherAgent: Git operations
@@ -12,6 +13,7 @@ This module provides agents for connector generation:
 from .base import BaseAgent
 from .research import ResearchAgent
 from .generator import GeneratorAgent
+from .mock_generator import MockGeneratorAgent
 from .tester import TesterAgent, TesterMode
 from .reviewer import ReviewerAgent
 from .publisher import PublisherAgent
@@ -22,6 +24,7 @@ __all__ = [
     # Specialized agents
     "ResearchAgent",
     "GeneratorAgent",
+    "MockGeneratorAgent",
     "TesterAgent",
     "TesterMode",
     "ReviewerAgent",

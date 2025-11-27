@@ -65,6 +65,14 @@ class Settings(BaseSettings):
         default=["Read", "Bash"],
         description="Tools allowed for publisher agent"
     )
+    mock_generator_allowed_tools: List[str] = Field(
+        default=["Read", "Write", "Bash", "WebSearch", "WebFetch"],
+        description="Tools allowed for mock generator agent"
+    )
+    mock_generator_max_turns: int = Field(
+        default=35,
+        description="Maximum turns for mock generator agent"
+    )
 
     # Budget Settings (per connector)
     max_budget: float = Field(
@@ -153,7 +161,7 @@ class Settings(BaseSettings):
         """Get Claude Agent SDK options for a specific agent type.
 
         Args:
-            agent_type: One of 'research', 'generator', 'tester', 'reviewer', 'publisher'
+            agent_type: One of 'research', 'generator', 'mock_generator', 'tester', 'reviewer', 'publisher'
 
         Returns:
             Dictionary of options for ClaudeAgentOptions
@@ -161,13 +169,19 @@ class Settings(BaseSettings):
         tool_mapping = {
             "research": self.research_allowed_tools,
             "generator": self.generator_allowed_tools,
+            "mock_generator": self.mock_generator_allowed_tools,
             "tester": self.tester_allowed_tools,
             "reviewer": self.reviewer_allowed_tools,
             "publisher": self.publisher_allowed_tools,
         }
 
-        # Use tester-specific max_turns to prevent infinite mocking loops
-        max_turns = self.tester_max_turns if agent_type == "tester" else self.max_turns
+        # Use agent-specific max_turns
+        if agent_type == "tester":
+            max_turns = self.tester_max_turns
+        elif agent_type == "mock_generator":
+            max_turns = self.mock_generator_max_turns
+        else:
+            max_turns = self.max_turns
 
         return {
             "max_turns": max_turns,

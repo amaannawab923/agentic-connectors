@@ -25,17 +25,42 @@ The orchestrator is a **native async LangGraph-based state machine** for orchest
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Pipeline Flow (v2)
+## Pipeline Flow (v2.1 - with MockGenerator)
 
 ```
-Research → Generator → Tester → TestReviewer ─┬─ VALID+PASS → Reviewer ─┬─ APPROVE → Publisher
-                ↑         ↑                   │                         │
-                │         │                   ├─ INVALID → Tester       ├─ REJECT:CODE → Generator
-                │         │                   │                         │
-                │         └───────────────────┴─ VALID+FAIL → Generator └─ REJECT:CONTEXT → Research
-                │                                                                  │
-                └──────────────────────────────────────────────────────────────────┘
+                                         ┌─── MockGenerator ───┐ (first run only)
+                                         │   (fixtures only,   │
+                                         │    NO tests)        │
+                                         │                     ↓
+Research → Generator ─┬─────────────────────────────────────→ Tester → TestReviewer ─┬─ VALID+PASS → Reviewer ─┬─ APPROVE → Publisher
+                ↑     │ (conditional routing)                   ↑                    │                         │
+                │     └─────────────────────────────────────────┘ (retry loops)      ├─ INVALID → Tester       ├─ REJECT:CODE → Generator
+                │                                                                     │                         │
+                │                                                                     └─ VALID+FAIL → Generator └─ REJECT:CONTEXT → Research
+                │                                                                                                          │
+                └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Routing Logic After Generator
+
+| Condition | Route | Reason |
+|-----------|-------|--------|
+| **First run** (gen_fix_retries = 0, no fixtures) | → MockGenerator | Generate fixtures and conftest.py |
+| **Retry loop** (gen_fix_retries > 0) | → Tester | Skip fixture generation, rerun tests |
+| **Fixtures exist** | → Tester | Skip fixture generation |
+
+### MockGenerator Behavior
+
+- **When it runs**: Only on first generation when fixtures don't exist
+- **What it does**:
+  - Reads IMPLEMENTATION.md from Generator
+  - Analyzes test files for fixture requirements
+  - Researches mock library attributes (universe_domain, etc.)
+  - Creates fixtures/ directory and conftest.py
+  - **Does NOT run tests** (that's Tester's job)
+- **When it's skipped**:
+  - On retry loops (gen_fix_retries > 0)
+  - When fixtures already exist
 
 ### Exit States
 
@@ -62,6 +87,7 @@ The `PipelineState` TypedDict defines the shared state across all nodes:
 | **Retry Counters** | `test_retries`, `gen_fix_retries`, `review_retries`, `research_retries` | Track loop iterations |
 | **Retry Limits** | `max_test_retries` (3), `max_gen_fix_retries` (3), `max_review_retries` (2), `max_research_retries` (1) | Configurable limits |
 | **Artifacts** | `research_output`, `generated_code`, `test_code`, `connector_dir` | Generated content |
+| **Mock Generation** | `mock_generation_output`, `fixtures_created`, `mock_generation_skipped` | Fixture and conftest.py metadata |
 | **Results** | `test_results`, `coverage_ratio`, `test_review_decision`, `review_decision` | Decision outcomes |
 | **Publish** | `published`, `pr_url`, `degraded_mode`, `degraded_streams` | Publication state |
 | **Metadata** | `errors`, `logs`, `completed_at`, `total_duration` | Execution metadata |
@@ -92,6 +118,7 @@ class PipelinePhase(str, Enum):
     PENDING = "pending"
     RESEARCHING = "researching"
     GENERATING = "generating"
+    MOCK_GENERATING = "mock_generating"
     TESTING = "testing"
     TEST_REVIEWING = "test_reviewing"
     REVIEWING = "reviewing"
