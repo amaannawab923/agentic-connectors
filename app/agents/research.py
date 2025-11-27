@@ -109,6 +109,7 @@ Output your research as a comprehensive markdown document with these sections:
 8. Code Samples
 9. Known Issues & Limitations
 10. References (include changelog URLs)
+"""
 
     async def execute(
         self,
