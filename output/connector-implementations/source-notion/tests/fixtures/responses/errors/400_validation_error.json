@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 400,
+  "code": "validation_error",
+  "message": "The request body does not match the schema for the expected parameters."
+}

@@ -1,218 +1,249 @@
-"""Connection check tests for Google Sheets connector."""
+"""
+Connection tests for Google Sheets connector.
 
-import sys
-import os
+These tests verify that the connector can establish connections
+using mocked Google API credentials.
+"""
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
-# Add parent directory to path to import from src package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from src.connector import GoogleSheetsConnector, ConnectionTestResult, create_connector
-from src.config import GoogleSheetsConfig, ServiceAccountCredentials
-from src.client import APIError, NotFoundError, PermissionDeniedError
-from src.auth import AuthenticationError
+from src.config import GoogleSheetsConfig
+from src.connector import GoogleSheetsConnector
+from src.client import GoogleSheetsClient
+from src.auth import GoogleSheetsAuthenticator
 
 
 class TestConnectionCheck:
-    """Test connection checking functionality."""
+    """Test connection checking with mocked API."""
 
-    def test_check_connection_success(self, service_account_config, mock_sheets_api):
-        """Test successful connection check."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+    def test_successful_connection_check(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture
+    ):
+        """Test that connection check succeeds with valid credentials and mocked client."""
+        # Mock at the client level to avoid Google SDK complexity
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.return_value = (
+                True,
+                "Successfully connected to spreadsheet 'Test Spreadsheet'",
+                {
+                    "spreadsheet_id": spreadsheet_metadata_fixture["spreadsheetId"],
+                    "title": spreadsheet_metadata_fixture["properties"]["title"],
+                    "sheet_count": len(spreadsheet_metadata_fixture["sheets"])
+                }
+            )
 
-        result = connector.check_connection()
-
-        assert result.success is True
-        assert result.spreadsheet_title == "Test Spreadsheet"
-        assert result.sheet_count == 2
-        assert result.error is None
-
-    def test_check_connection_returns_connection_test_result(self, service_account_config, mock_sheets_api):
-        """Test that check_connection returns a ConnectionTestResult."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        result = connector.check_connection()
-
-        assert isinstance(result, ConnectionTestResult)
-
-    def test_check_connection_authentication_error(self, service_account_config):
-        """Test connection check handles authentication errors."""
-        with patch('google.oauth2.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('googleapiclient.discovery.build') as mock_build:
-
-            mock_creds.side_effect = ValueError("Invalid credentials")
-
-            config = GoogleSheetsConfig(**service_account_config)
+            config = GoogleSheetsConfig(**valid_service_account_config)
             connector = GoogleSheetsConnector(config)
 
-            result = connector.check_connection()
+            status = connector.check()
 
-            # Should return failure, not raise an exception
-            assert result.success is False
-            assert result.error is not None
+            assert status.connected is True
+            assert status.spreadsheet_title == "Test Spreadsheet"
+            assert status.sheet_count == 3
 
-    def test_check_connection_not_found_error(self, service_account_config):
-        """Test connection check handles spreadsheet not found."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
+    def test_connection_check_with_oauth2(
+        self,
+        valid_oauth2_config,
+        spreadsheet_metadata_fixture
+    ):
+        """Test connection check with OAuth2 credentials."""
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.return_value = (
+                True,
+                "Successfully connected",
+                {
+                    "spreadsheet_id": spreadsheet_metadata_fixture["spreadsheetId"],
+                    "title": spreadsheet_metadata_fixture["properties"]["title"],
+                    "sheet_count": len(spreadsheet_metadata_fixture["sheets"])
+                }
+            )
 
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            # Simulate NotFoundError
-            from googleapiclient.errors import HttpError
-            mock_response = MagicMock()
-            mock_response.status = 404
-            mock_response.reason = "Not Found"
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(side_effect=HttpError(
-                mock_response, b'{"error": {"message": "Spreadsheet not found"}}'
-            ))
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
-
-            mock_build.return_value = mock_service
-
-            config = GoogleSheetsConfig(**service_account_config)
+            config = GoogleSheetsConfig(**valid_oauth2_config)
             connector = GoogleSheetsConnector(config)
 
-            result = connector.check_connection()
+            status = connector.check()
+            assert status.connected is True
 
-            assert result.success is False
-            assert "not found" in result.message.lower()
+    def test_connection_check_with_api_key(
+        self,
+        valid_api_key_config,
+        spreadsheet_metadata_fixture
+    ):
+        """Test connection check with API key credentials."""
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.return_value = (
+                True,
+                "Successfully connected",
+                {
+                    "spreadsheet_id": spreadsheet_metadata_fixture["spreadsheetId"],
+                    "title": spreadsheet_metadata_fixture["properties"]["title"],
+                    "sheet_count": len(spreadsheet_metadata_fixture["sheets"])
+                }
+            )
 
-    def test_check_connection_permission_denied(self, service_account_config):
-        """Test connection check handles permission denied."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
-
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            # Simulate PermissionDeniedError
-            from googleapiclient.errors import HttpError
-            mock_response = MagicMock()
-            mock_response.status = 403
-            mock_response.reason = "Forbidden"
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(side_effect=HttpError(
-                mock_response, b'{"error": {"message": "Permission denied"}}'
-            ))
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
-
-            mock_build.return_value = mock_service
-
-            config = GoogleSheetsConfig(**service_account_config)
+            config = GoogleSheetsConfig(**valid_api_key_config)
             connector = GoogleSheetsConnector(config)
 
-            result = connector.check_connection()
-
-            assert result.success is False
-            assert "permission" in result.message.lower()
-
-    def test_connection_test_result_string_representation(self):
-        """Test ConnectionTestResult string representation."""
-        # Success case
-        result_success = ConnectionTestResult(
-            success=True,
-            message="Connection successful",
-            spreadsheet_title="My Spreadsheet",
-            sheet_count=3,
-        )
-        assert "successful" in str(result_success).lower()
-        assert "My Spreadsheet" in str(result_success)
-
-        # Failure case
-        result_failure = ConnectionTestResult(
-            success=False,
-            message="Authentication failed",
-        )
-        assert "failed" in str(result_failure).lower()
+            status = connector.check()
+            assert status.connected is True
 
 
-class TestConnectorFactory:
-    """Test the create_connector factory function."""
+class TestConnectionFailures:
+    """Test connection failure scenarios."""
 
-    def test_create_connector_with_service_account(self, service_account_config, mock_sheets_api):
-        """Test creating connector with service account config dict."""
-        connector = create_connector(service_account_config)
+    def test_authentication_failure(
+        self,
+        valid_service_account_config,
+        error_401_fixture
+    ):
+        """Test that authentication failure is handled gracefully."""
+        from src.utils import AuthenticationError
 
-        assert isinstance(connector, GoogleSheetsConnector)
-        assert connector.config.spreadsheet_id == service_account_config["spreadsheet_id"]
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.return_value = (
+                False,
+                "Authentication failed: 401 Unauthorized",
+                None
+            )
 
-    def test_create_connector_with_oauth2(self, oauth2_config):
-        """Test creating connector with OAuth2 config dict."""
-        with patch('google.oauth2.credentials.Credentials') as mock_creds:
-            connector = create_connector(oauth2_config)
+            config = GoogleSheetsConfig(**valid_service_account_config)
+            connector = GoogleSheetsConnector(config)
 
-            assert isinstance(connector, GoogleSheetsConnector)
-            assert connector.config.spreadsheet_id == oauth2_config["spreadsheet_id"]
+            status = connector.check()
+            assert status.connected is False
+            assert status.error is not None
 
-    def test_create_connector_auto_detects_auth_type(self, valid_private_key):
-        """Test create_connector auto-detects auth type when not specified."""
-        config_dict = {
-            "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-            "credentials": {
-                "project_id": "test-project",
-                "private_key": valid_private_key,
-                "client_email": "test@test.iam.gserviceaccount.com",
-            }
-        }
+    def test_not_found_failure(
+        self,
+        valid_service_account_config,
+        error_404_fixture
+    ):
+        """Test that not found error is handled gracefully."""
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.return_value = (
+                False,
+                "Spreadsheet not found: 404",
+                None
+            )
 
-        with patch('google.oauth2.service_account.Credentials.from_service_account_info'):
-            connector = create_connector(config_dict)
-            assert isinstance(connector.config.credentials, ServiceAccountCredentials)
+            config = GoogleSheetsConfig(**valid_service_account_config)
+            connector = GoogleSheetsConnector(config)
+
+            status = connector.check()
+            assert status.connected is False
+
+    def test_connection_raises_exception(
+        self,
+        valid_service_account_config
+    ):
+        """Test that exceptions are handled gracefully."""
+        from src.utils import GoogleSheetsError
+
+        with patch.object(GoogleSheetsClient, 'check_connection') as mock_check:
+            mock_check.side_effect = GoogleSheetsError("Connection timeout")
+
+            config = GoogleSheetsConfig(**valid_service_account_config)
+            connector = GoogleSheetsConnector(config)
+
+            status = connector.check()
+            assert status.connected is False
+            assert "timeout" in status.error.lower()
 
 
-class TestConnectorContextManager:
-    """Test connector context manager functionality."""
+class TestClientRateLimiter:
+    """Test rate limiter functionality."""
 
-    def test_connector_context_manager(self, service_account_config, mock_sheets_api):
-        """Test connector can be used as context manager."""
-        config = GoogleSheetsConfig(**service_account_config)
+    def test_rate_limiter_init(self):
+        """Test that rate limiter initializes correctly."""
+        from src.client import RateLimiter
 
-        with GoogleSheetsConnector(config) as connector:
-            result = connector.check_connection()
-            assert result.success is True
+        limiter = RateLimiter(requests_per_minute=60)
+        assert limiter.requests_per_minute == 60
+        assert limiter.window_size == 60.0
 
-    def test_connector_close_called_on_exit(self, service_account_config, mock_sheets_api):
-        """Test connector.close() is called when exiting context."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+    def test_rate_limiter_acquire(self):
+        """Test that rate limiter acquire works."""
+        from src.client import RateLimiter
 
-        with patch.object(connector, 'close') as mock_close:
-            with connector:
-                pass
-            mock_close.assert_called_once()
+        limiter = RateLimiter(requests_per_minute=60)
 
-    def test_connector_explicit_close(self, service_account_config, mock_sheets_api):
-        """Test explicit connector close."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+        # Should succeed without delay
+        wait_time = limiter.acquire()
+        assert wait_time == 0.0
 
-        # Access client to create it
-        _ = connector.check_connection()
+    def test_rate_limiter_reset(self):
+        """Test that rate limiter reset works."""
+        from src.client import RateLimiter
 
-        # Close should not raise
-        connector.close()
+        limiter = RateLimiter(requests_per_minute=60)
+        limiter.acquire()
+        limiter.reset()
+        assert len(limiter.timestamps) == 0
 
-        # Should be able to close multiple times
-        connector.close()
+
+class TestRetryHandler:
+    """Test retry handler functionality."""
+
+    def test_retry_handler_init(self):
+        """Test that retry handler initializes correctly."""
+        from src.client import RetryHandler
+
+        handler = RetryHandler(max_retries=5, base_delay=1.0)
+        assert handler.max_retries == 5
+        assert handler.base_delay == 1.0
+
+    def test_calculate_delay_exponential(self):
+        """Test that delay calculation is exponential."""
+        from src.client import RetryHandler
+
+        handler = RetryHandler(max_retries=5, base_delay=1.0, jitter_factor=0)
+
+        # Without jitter, delays should be 1, 2, 4, 8, 16...
+        delay0 = handler.calculate_delay(0)
+        delay1 = handler.calculate_delay(1)
+        delay2 = handler.calculate_delay(2)
+
+        assert delay0 == 1.0
+        assert delay1 == 2.0
+        assert delay2 == 4.0
+
+    def test_should_retry_on_429(self):
+        """Test that retry is suggested on 429 error."""
+        from src.client import RetryHandler
+        from googleapiclient.errors import HttpError
+        import httplib2
+
+        handler = RetryHandler(max_retries=5)
+        mock_response = httplib2.Response({'status': 429})
+        error = HttpError(mock_response, b'Rate limit exceeded')
+
+        assert handler.should_retry(0, error) is True
+        assert handler.should_retry(5, error) is False  # Max retries exceeded
+
+    def test_should_retry_on_server_error(self):
+        """Test that retry is suggested on 5xx errors."""
+        from src.client import RetryHandler
+        from googleapiclient.errors import HttpError
+        import httplib2
+
+        handler = RetryHandler(max_retries=5)
+
+        for status in [500, 502, 503, 504]:
+            mock_response = httplib2.Response({'status': status})
+            error = HttpError(mock_response, b'Server error')
+            assert handler.should_retry(0, error) is True
+
+    def test_should_not_retry_on_400(self):
+        """Test that retry is not suggested on 400 error."""
+        from src.client import RetryHandler
+        from googleapiclient.errors import HttpError
+        import httplib2
+
+        handler = RetryHandler(max_retries=5)
+        mock_response = httplib2.Response({'status': 400})
+        error = HttpError(mock_response, b'Bad request')
+
+        assert handler.should_retry(0, error) is False

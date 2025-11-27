@@ -1,210 +1,264 @@
-"""Schema discovery tests for Google Sheets connector."""
+"""
+Schema discovery tests for Google Sheets connector.
 
-import sys
-import os
+These tests verify that the connector can discover available streams
+and their schemas using mocked Google API.
+"""
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
-# Add parent directory to path to import from src package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from src.config import GoogleSheetsConfig
+from src.connector import GoogleSheetsConnector, Catalog, CatalogEntry
+from src.streams import StreamSchema, SheetStream, SpreadsheetStreamFactory
+from src.client import GoogleSheetsClient
 
-from src.connector import GoogleSheetsConnector
-from src.config import GoogleSheetsConfig, Catalog, CatalogEntry
 
-
-class TestDiscovery:
+class TestSchemaDiscovery:
     """Test schema discovery functionality."""
 
-    def test_discover_returns_catalog(self, service_account_config, mock_sheets_api):
-        """Test discover returns a Catalog object."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+    def test_discover_returns_catalog(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test that discover returns a Catalog object."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
 
-        catalog = connector.discover()
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
 
-        assert isinstance(catalog, Catalog)
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
 
-    def test_discover_finds_all_sheets(self, service_account_config, mock_sheets_api):
-        """Test discover finds all sheets in spreadsheet."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
 
-        catalog = connector.discover()
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
 
-        # Should find both sheets from mock metadata
-        assert len(catalog.streams) == 2
-        stream_names = catalog.get_stream_names()
-        assert "Sheet1" in stream_names
-        assert "Data Sheet" in stream_names
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
 
-    def test_discover_infers_schema(self, service_account_config, mock_sheets_api):
-        """Test discover infers JSON schema from data."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+                            catalog = connector.discover()
 
-        catalog = connector.discover()
+                            assert isinstance(catalog, Catalog)
+                            assert len(catalog.streams) > 0
 
-        # Check first stream has schema
-        stream = catalog.get_stream("Sheet1")
-        assert stream is not None
-        assert "properties" in stream.schema
+    def test_discover_finds_all_sheets(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test that all sheets are discovered."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
 
-    def test_discovered_streams_have_correct_sync_modes(self, service_account_config, mock_sheets_api):
-        """Test discovered streams have correct sync modes."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
 
-        catalog = connector.discover()
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
 
-        for stream in catalog.streams:
-            assert "full_refresh" in stream.supported_sync_modes
-            # Google Sheets doesn't support incremental
-            assert stream.source_defined_cursor is False
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
 
-    def test_discover_with_stream_filter(self, service_account_config, mock_sheets_api):
-        """Test discover respects stream filter configuration."""
-        # Configure to only include Sheet1
-        service_account_config["streams"] = [
-            {"name": "Sheet1", "enabled": True},
-            {"name": "Data Sheet", "enabled": False},
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
+
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
+
+                            catalog = connector.discover()
+
+                            # Based on spreadsheet_metadata_fixture, we expect 3 sheets
+                            expected_sheets = ["Sheet1", "Orders", "Customers"]
+                            discovered_names = [entry.stream_name for entry in catalog.streams]
+
+                            for expected in expected_sheets:
+                                assert expected in discovered_names
+
+    def test_catalog_entry_has_required_fields(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test that CatalogEntry has all required fields."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
+
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
+
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
+
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
+
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
+
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
+
+                            catalog = connector.discover()
+
+                            for entry in catalog.streams:
+                                assert isinstance(entry, CatalogEntry)
+                                assert entry.stream_name is not None
+                                assert entry.stream_schema is not None
+                                assert entry.supported_sync_modes is not None
+                                assert "full_refresh" in entry.supported_sync_modes
+
+
+class TestStreamSchema:
+    """Test StreamSchema class."""
+
+    def test_stream_schema_from_headers(self):
+        """Test creating schema from headers."""
+        headers = ["ID", "Name", "Email", "Status"]
+        schema = StreamSchema.from_headers(headers)
+
+        assert schema.type == "object"
+        assert len(schema.properties) > 0
+
+        # Check headers are in properties (sanitized)
+        assert "id" in schema.properties
+        assert "name" in schema.properties
+        assert "email" in schema.properties
+        assert "status" in schema.properties
+
+        # Check _row_number is added
+        assert "_row_number" in schema.properties
+
+    def test_stream_schema_from_headers_with_sample_data(self):
+        """Test creating schema with sample data for type inference."""
+        headers = ["ID", "Name", "Amount", "Active"]
+        sample_data = [
+            ["1", "John", "100.50", "true"],
+            ["2", "Jane", "200.75", "false"],
         ]
+        schema = StreamSchema.from_headers(headers, sample_data)
 
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+        assert "id" in schema.properties
+        assert "amount" in schema.properties
 
-        catalog = connector.discover()
+    def test_stream_schema_to_dict(self):
+        """Test schema to_dict conversion."""
+        headers = ["Name", "Value"]
+        schema = StreamSchema.from_headers(headers)
+        schema_dict = schema.to_dict()
 
-        # Should only find Sheet1
-        stream_names = catalog.get_stream_names()
-        assert "Sheet1" in stream_names
-        assert "Data Sheet" not in stream_names
-
-    def test_discover_handles_empty_sheet(self, service_account_config):
-        """Test discover handles sheets with no data."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
-
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            # Spreadsheet with an empty sheet
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(return_value={
-                "spreadsheetId": "test-id",
-                "properties": {"title": "Test"},
-                "sheets": [
-                    {
-                        "properties": {
-                            "sheetId": 0,
-                            "title": "Empty Sheet",
-                            "index": 0,
-                            "gridProperties": {"rowCount": 100, "columnCount": 26}
-                        }
-                    }
-                ]
-            })
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
-
-            # Return empty values for header
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
-
-            def mock_values_get(**kwargs):
-                mock_response = MagicMock()
-                mock_response.execute = MagicMock(return_value={
-                    "range": "'Empty Sheet'!1:1",
-                    "values": []
-                })
-                return mock_response
-
-            mock_values.get = MagicMock(side_effect=mock_values_get)
-
-            mock_build.return_value = mock_service
-
-            config = GoogleSheetsConfig(**service_account_config)
-            connector = GoogleSheetsConnector(config)
-
-            catalog = connector.discover()
-
-            # Should still create a stream entry, even if empty
-            assert len(catalog.streams) >= 0
+        assert "type" in schema_dict
+        assert schema_dict["type"] == "object"
+        assert "properties" in schema_dict
+        assert "additionalProperties" in schema_dict
 
 
-class TestSchemaInference:
-    """Test schema inference from sample data."""
+class TestSheetStream:
+    """Test SheetStream class."""
 
-    def test_schema_infers_string_type(self, service_account_config, mock_sheets_api):
-        """Test schema inference detects string types."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        catalog = connector.discover()
-        stream = catalog.get_stream("Sheet1")
-
-        # Name and Email should be strings
-        props = stream.schema.get("properties", {})
-        assert "name" in props or "Name" in props
-
-    def test_schema_includes_nullable(self, service_account_config, mock_sheets_api):
-        """Test inferred schema types include null."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        catalog = connector.discover()
-        stream = catalog.get_stream("Sheet1")
-
-        # All fields should be nullable
-        props = stream.schema.get("properties", {})
-        for prop_name, prop_schema in props.items():
-            if "type" in prop_schema:
-                types = prop_schema["type"]
-                if isinstance(types, list):
-                    assert "null" in types, f"Field {prop_name} should be nullable"
-
-
-class TestStreamMetadata:
-    """Test stream metadata functionality."""
-
-    def test_get_stream_metadata(self, service_account_config, mock_sheets_api):
-        """Test getting metadata for a specific stream."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        metadata = connector.get_stream_metadata("Sheet1")
-
-        assert metadata.name == "Sheet1"
-        assert metadata.sheet_id == 0
-        assert metadata.row_count == 1000
-        assert metadata.column_count == 26
-
-    def test_get_stream_metadata_not_found(self, service_account_config, mock_sheets_api):
-        """Test getting metadata for non-existent stream raises error."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        with pytest.raises(ValueError) as exc_info:
-            connector.get_stream_metadata("NonExistent")
-
-        assert "not found" in str(exc_info.value).lower()
-
-    def test_stream_metadata_estimated_record_count(self):
-        """Test StreamMetadata estimated_record_count property."""
-        from src.streams import StreamMetadata
-
-        metadata = StreamMetadata(
-            name="Test",
+    def test_sheet_stream_primary_key(self):
+        """Test that SheetStream has _row_number as primary key."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
             sheet_id=0,
-            row_count=100,
-            column_count=10,
+            include_row_numbers=True
         )
 
-        # Should be row_count - 1 (for header)
-        assert metadata.estimated_record_count == 99
+        assert stream.primary_key == ["_row_number"]
+
+    def test_sheet_stream_replication_method(self):
+        """Test that SheetStream uses FULL_REFRESH."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
+            sheet_id=0
+        )
+
+        assert stream.replication_method == "FULL_REFRESH"
+
+
+class TestCatalog:
+    """Test Catalog class."""
+
+    def test_catalog_get_stream(self):
+        """Test Catalog.get_stream method."""
+        entry1 = CatalogEntry(
+            stream_name="Sheet1",
+            stream_schema={"type": "object"},
+            metadata={},
+            supported_sync_modes=["full_refresh"]
+        )
+        entry2 = CatalogEntry(
+            stream_name="Sheet2",
+            stream_schema={"type": "object"},
+            metadata={},
+            supported_sync_modes=["full_refresh"]
+        )
+
+        catalog = Catalog(streams=[entry1, entry2])
+
+        assert catalog.get_stream("Sheet1") == entry1
+        assert catalog.get_stream("Sheet2") == entry2
+        assert catalog.get_stream("NonExistent") is None
+
+    def test_catalog_to_dict(self):
+        """Test Catalog.to_dict method."""
+        entry = CatalogEntry(
+            stream_name="Sheet1",
+            stream_schema={"type": "object"},
+            metadata={"test": "value"},
+            supported_sync_modes=["full_refresh"]
+        )
+        catalog = Catalog(streams=[entry])
+        catalog_dict = catalog.to_dict()
+
+        assert "streams" in catalog_dict
+        assert len(catalog_dict["streams"]) == 1
+        assert catalog_dict["streams"][0]["stream"]["name"] == "Sheet1"
+
+
+class TestSpreadsheetStreamFactory:
+    """Test SpreadsheetStreamFactory class."""
+
+    def test_factory_discover_streams(self, spreadsheet_metadata_fixture):
+        """Test that factory discovers streams correctly."""
+        mock_client = MagicMock()
+        mock_client.get_spreadsheet_metadata.return_value = spreadsheet_metadata_fixture
+
+        factory = SpreadsheetStreamFactory(
+            client=mock_client,
+            sanitize_names=True,
+            include_row_numbers=True
+        )
+
+        streams = factory.discover_streams()
+
+        assert len(streams) == 3
+        stream_names = [s.name for s in streams]
+        assert "Sheet1" in stream_names
+        assert "Orders" in stream_names
+        assert "Customers" in stream_names
+
+    def test_factory_get_stream(self, spreadsheet_metadata_fixture):
+        """Test that factory can get a specific stream."""
+        mock_client = MagicMock()
+        mock_client.get_spreadsheet_metadata.return_value = spreadsheet_metadata_fixture
+
+        factory = SpreadsheetStreamFactory(client=mock_client)
+
+        stream = factory.get_stream("Sheet1")
+        assert stream is not None
+        assert stream.name == "Sheet1"
+
+        # Non-existent stream returns None
+        assert factory.get_stream("NonExistent") is None

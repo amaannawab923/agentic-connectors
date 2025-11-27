@@ -1,437 +1,279 @@
-"""Data reading tests for Google Sheets connector."""
+"""
+Data reading tests for Google Sheets connector.
 
-import sys
-import os
+These tests verify that the connector can read data from sheets
+using mocked Google API responses.
+"""
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
-# Add parent directory to path to import from src package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from src.connector import GoogleSheetsConnector
 from src.config import GoogleSheetsConfig
+from src.connector import GoogleSheetsConnector, Record, StateMessage
 from src.streams import SheetStream
+from src.client import GoogleSheetsClient
 
 
 class TestDataReading:
     """Test data reading functionality."""
 
-    def test_read_yields_records(self, service_account_config, mock_sheets_api):
-        """Test read yields record dictionaries."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
+    def test_read_returns_records(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test that read returns Record objects."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
 
-        records = list(connector.read("Sheet1"))
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
 
-        # Should yield records (excluding header)
-        assert len(records) >= 0
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
 
-    def test_read_record_has_column_keys(self, service_account_config):
-        """Test read records have column names as keys."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
 
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
 
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
 
-            # Mock spreadsheet metadata
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(return_value={
-                "spreadsheetId": "test-id",
-                "properties": {"title": "Test"},
-                "sheets": [{"properties": {"sheetId": 0, "title": "Sheet1", "index": 0, "gridProperties": {"rowCount": 100, "columnCount": 5}}}]
-            })
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
+                            records = list(connector.read())
 
-            # Track call count for different ranges
-            call_count = [0]
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
+                            # Should have some records
+                            assert len(records) > 0
 
-            def mock_values_get(**kwargs):
-                range_notation = kwargs.get('range', '')
-                mock_response = MagicMock()
+                            # Should contain Record and StateMessage objects
+                            record_types = set(type(r) for r in records)
+                            assert Record in record_types or StateMessage in record_types
 
-                if ':1' in range_notation or 'A1:' in range_notation:
-                    # Header request
-                    mock_response.execute = MagicMock(return_value={
-                        "values": [["Name", "Email", "Age"]]
-                    })
-                else:
-                    # Data request
-                    call_count[0] += 1
-                    if call_count[0] == 1:
-                        mock_response.execute = MagicMock(return_value={
-                            "values": [
-                                ["Alice", "alice@test.com", 30],
-                                ["Bob", "bob@test.com", 25],
-                            ]
-                        })
-                    else:
-                        mock_response.execute = MagicMock(return_value={"values": []})
+    def test_read_with_selected_streams(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test reading from specific selected streams."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
 
-                return mock_response
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
 
-            mock_values.get = MagicMock(side_effect=mock_values_get)
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
 
-            mock_build.return_value = mock_service
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
 
-            config = GoogleSheetsConfig(**service_account_config)
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
+
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
+
+                            # Read only Sheet1
+                            records = list(connector.read(selected_streams=["Sheet1"]))
+
+                            # Should have some records
+                            for record in records:
+                                if isinstance(record, Record):
+                                    assert record.stream == "Sheet1"
+
+
+class TestRecord:
+    """Test Record class."""
+
+    def test_record_to_dict(self):
+        """Test Record.to_dict method."""
+        record = Record(
+            stream="Sheet1",
+            data={"id": 1, "name": "Test"},
+            emitted_at="2024-01-01T00:00:00Z"
+        )
+        record_dict = record.to_dict()
+
+        assert record_dict["type"] == "RECORD"
+        assert record_dict["stream"] == "Sheet1"
+        assert record_dict["data"]["id"] == 1
+        assert record_dict["emitted_at"] == "2024-01-01T00:00:00Z"
+
+    def test_record_to_json(self):
+        """Test Record.to_json method."""
+        record = Record(
+            stream="Sheet1",
+            data={"id": 1},
+            emitted_at="2024-01-01T00:00:00Z"
+        )
+        json_str = record.to_json()
+
+        assert isinstance(json_str, str)
+        assert "RECORD" in json_str
+        assert "Sheet1" in json_str
+
+
+class TestStateMessage:
+    """Test StateMessage class."""
+
+    def test_state_message_to_dict(self):
+        """Test StateMessage.to_dict method."""
+        state = StateMessage(
+            data={"stream": "Sheet1", "completed": True}
+        )
+        state_dict = state.to_dict()
+
+        assert state_dict["type"] == "STATE"
+        assert state_dict["data"]["stream"] == "Sheet1"
+        assert state_dict["data"]["completed"] is True
+
+    def test_state_message_to_json(self):
+        """Test StateMessage.to_json method."""
+        state = StateMessage(
+            data={"stream": "Sheet1", "records_read": 100}
+        )
+        json_str = state.to_json()
+
+        assert isinstance(json_str, str)
+        assert "STATE" in json_str
+
+
+class TestRowTransformation:
+    """Test row transformation functionality."""
+
+    def test_transform_row_includes_row_number(self):
+        """Test that transformed rows include _row_number."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
+            sheet_id=0,
+            include_row_numbers=True
+        )
+
+        row = ["Alice", "alice@example.com", "active"]
+        headers = ["Name", "Email", "Status"]
+
+        record = stream._transform_row(row, headers, row_number=2)
+
+        assert "_row_number" in record
+        assert record["_row_number"] == 2
+
+    def test_transform_row_sanitizes_column_names(self):
+        """Test that column names are sanitized."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
+            sheet_id=0,
+            sanitize_names=True
+        )
+
+        row = ["value1", "value2"]
+        headers = ["Column Name With Spaces", "Special@Characters!"]
+
+        record = stream._transform_row(row, headers, row_number=2)
+
+        # Check that headers are sanitized
+        assert "column_name_with_spaces" in record
+        assert "special_characters" in record
+
+    def test_transform_row_handles_missing_values(self):
+        """Test that missing values are handled correctly."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
+            sheet_id=0
+        )
+
+        # Row has fewer values than headers
+        row = ["Alice"]
+        headers = ["Name", "Email", "Status"]
+
+        record = stream._transform_row(row, headers, row_number=2)
+
+        assert record["name"] == "Alice"
+        assert record["email"] is None
+        assert record["status"] is None
+
+    def test_transform_row_converts_empty_to_none(self):
+        """Test that empty strings are converted to None."""
+        mock_client = MagicMock()
+        stream = SheetStream(
+            name="TestSheet",
+            client=mock_client,
+            sheet_id=0
+        )
+
+        row = ["Alice", "", "active"]
+        headers = ["Name", "Email", "Status"]
+
+        record = stream._transform_row(row, headers, row_number=2)
+
+        assert record["name"] == "Alice"
+        assert record["email"] is None  # Empty string -> None
+        assert record["status"] == "active"
+
+
+class TestReadStream:
+    """Test read_stream method."""
+
+    def test_read_stream_raises_for_unknown_stream(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture
+    ):
+        """Test that reading unknown stream raises error."""
+        from src.utils import GoogleSheetsError
+
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
+
+            config = GoogleSheetsConfig(**valid_service_account_config)
             connector = GoogleSheetsConnector(config)
 
-            records = list(connector.read("Sheet1"))
+            with pytest.raises(GoogleSheetsError) as exc_info:
+                list(connector.read_stream("NonExistentSheet"))
 
-            assert len(records) == 2
-            assert "name" in records[0]
-            assert "email" in records[0]
-            assert records[0]["name"] == "Alice"
-            assert records[1]["name"] == "Bob"
+            assert "not found" in str(exc_info.value).lower()
 
-    def test_read_includes_row_number(self, service_account_config):
-        """Test read includes _row_number when configured."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
 
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
+class TestSync:
+    """Test sync functionality."""
 
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
+    def test_sync_returns_results(
+        self,
+        valid_service_account_config,
+        spreadsheet_metadata_fixture,
+        sheet_values_fixture
+    ):
+        """Test that sync returns SyncResult objects."""
+        with patch.object(GoogleSheetsClient, 'get_spreadsheet_metadata') as mock_metadata:
+            mock_metadata.return_value = spreadsheet_metadata_fixture
 
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(return_value={
-                "spreadsheetId": "test-id",
-                "properties": {"title": "Test"},
-                "sheets": [{"properties": {"sheetId": 0, "title": "Sheet1", "index": 0, "gridProperties": {"rowCount": 100, "columnCount": 5}}}]
-            })
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
+            with patch.object(GoogleSheetsClient, 'get_headers') as mock_headers:
+                mock_headers.return_value = sheet_values_fixture["values"][0]
 
-            call_count = [0]
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
+                with patch.object(GoogleSheetsClient, 'get_row_count') as mock_row_count:
+                    mock_row_count.return_value = 1000
 
-            def mock_values_get(**kwargs):
-                mock_response = MagicMock()
-                range_notation = kwargs.get('range', '')
+                    with patch.object(GoogleSheetsClient, 'get_column_count') as mock_col_count:
+                        mock_col_count.return_value = 26
 
-                if ':1' in range_notation:
-                    mock_response.execute = MagicMock(return_value={"values": [["Name"]]})
-                else:
-                    call_count[0] += 1
-                    if call_count[0] == 1:
-                        mock_response.execute = MagicMock(return_value={"values": [["Alice"], ["Bob"]]})
-                    else:
-                        mock_response.execute = MagicMock(return_value={"values": []})
-                return mock_response
+                        with patch.object(GoogleSheetsClient, 'read_sheet_in_batches') as mock_batches:
+                            mock_batches.return_value = iter([sheet_values_fixture["values"][1:]])
 
-            mock_values.get = MagicMock(side_effect=mock_values_get)
+                            config = GoogleSheetsConfig(**valid_service_account_config)
+                            connector = GoogleSheetsConnector(config)
 
-            mock_build.return_value = mock_service
+                            results = connector.sync()
 
-            service_account_config["include_row_number"] = True
-            config = GoogleSheetsConfig(**service_account_config)
-            connector = GoogleSheetsConnector(config)
-
-            records = list(connector.read("Sheet1"))
-
-            if records:
-                assert "_row_number" in records[0]
-
-    def test_read_handles_empty_cells(self, service_account_config):
-        """Test read handles empty cells correctly."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
-
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(return_value={
-                "spreadsheetId": "test-id",
-                "properties": {"title": "Test"},
-                "sheets": [{"properties": {"sheetId": 0, "title": "Sheet1", "index": 0, "gridProperties": {"rowCount": 100, "columnCount": 5}}}]
-            })
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
-
-            call_count = [0]
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
-
-            def mock_values_get(**kwargs):
-                mock_response = MagicMock()
-                range_notation = kwargs.get('range', '')
-
-                if ':1' in range_notation:
-                    mock_response.execute = MagicMock(return_value={"values": [["Name", "Email", "Age"]]})
-                else:
-                    call_count[0] += 1
-                    if call_count[0] == 1:
-                        # Row with missing value (shorter list)
-                        mock_response.execute = MagicMock(return_value={"values": [["Alice", ""], ["Bob"]]})
-                    else:
-                        mock_response.execute = MagicMock(return_value={"values": []})
-                return mock_response
-
-            mock_values.get = MagicMock(side_effect=mock_values_get)
-
-            mock_build.return_value = mock_service
-
-            config = GoogleSheetsConfig(**service_account_config)
-            connector = GoogleSheetsConnector(config)
-
-            records = list(connector.read("Sheet1"))
-
-            # Should handle missing values
-            if records:
-                assert "email" in records[0]
-
-
-class TestReadAll:
-    """Test reading from all streams."""
-
-    def test_read_all_yields_records_with_stream_name(self, service_account_config, mock_sheets_api):
-        """Test read_all includes _stream field."""
-        config = GoogleSheetsConfig(**service_account_config)
-        connector = GoogleSheetsConnector(config)
-
-        records = list(connector.read_all())
-
-        # Records should have _stream field
-        for record in records:
-            assert "_stream" in record
-
-
-class TestSheetStream:
-    """Test SheetStream class directly."""
-
-    def test_sheet_stream_normalizes_headers(self):
-        """Test SheetStream normalizes column headers."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
-
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
-
-            mock_values_get_request = MagicMock()
-            mock_values_get_request.execute = MagicMock(return_value={
-                "values": [["First Name", "Last Name", "E-Mail Address", ""]]
-            })
-            mock_values.get = MagicMock(return_value=mock_values_get_request)
-
-            mock_build.return_value = mock_service
-
-            from src.client import GoogleSheetsClient
-            from src.auth import ServiceAccountAuthenticator
-
-            authenticator = ServiceAccountAuthenticator({
-                "type": "service_account",
-                "project_id": "test",
-                "private_key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
-                "client_email": "test@test.iam.gserviceaccount.com"
-            })
-
-            client = GoogleSheetsClient(authenticator)
-
-            stream = SheetStream(
-                client=client,
-                spreadsheet_id="test-id",
-                sheet_name="Sheet1",
-            )
-
-            headers = stream.headers
-
-            # Headers should be normalized (lowercase, underscores)
-            assert "first_name" in headers
-            assert "last_name" in headers
-            # Special characters replaced
-            assert "e_mail_address" in headers or "email_address" in "".join(headers)
-
-
-class TestBatchReading:
-    """Test batch reading functionality."""
-
-    def test_read_respects_batch_size(self, service_account_config):
-        """Test read respects configured batch size."""
-        # Patch at the module level where these are imported
-        with patch('src.auth.service_account.Credentials.from_service_account_info') as mock_creds, \
-             patch('src.client.build') as mock_build:
-
-            mock_credentials = MagicMock()
-            mock_credentials.valid = True
-            mock_credentials.expired = False
-            mock_credentials.universe_domain = "googleapis.com"
-            mock_creds.return_value = mock_credentials
-
-            mock_service = MagicMock()
-            mock_spreadsheets = MagicMock()
-            mock_service.spreadsheets = MagicMock(return_value=mock_spreadsheets)
-
-            mock_get_request = MagicMock()
-            mock_get_request.execute = MagicMock(return_value={
-                "spreadsheetId": "test-id",
-                "properties": {"title": "Test"},
-                "sheets": [{"properties": {"sheetId": 0, "title": "Sheet1", "index": 0, "gridProperties": {"rowCount": 5000, "columnCount": 5}}}]
-            })
-            mock_spreadsheets.get = MagicMock(return_value=mock_get_request)
-
-            # Track requested ranges
-            requested_ranges = []
-            mock_values = MagicMock()
-            mock_spreadsheets.values = MagicMock(return_value=mock_values)
-
-            def mock_values_get(**kwargs):
-                mock_response = MagicMock()
-                range_notation = kwargs.get('range', '')
-                requested_ranges.append(range_notation)
-
-                if ':1' in range_notation:
-                    mock_response.execute = MagicMock(return_value={"values": [["Name"]]})
-                else:
-                    mock_response.execute = MagicMock(return_value={"values": []})
-                return mock_response
-
-            mock_values.get = MagicMock(side_effect=mock_values_get)
-
-            mock_build.return_value = mock_service
-
-            # Set small batch size
-            service_account_config["row_batch_size"] = 100
-            config = GoogleSheetsConfig(**service_account_config)
-            connector = GoogleSheetsConnector(config)
-
-            # Read should use the configured batch size
-            list(connector.read("Sheet1"))
-
-            # Should have requested data in batches (after header)
-            data_requests = [r for r in requested_ranges if ':1' not in r]
-            assert len(data_requests) >= 0
-
-
-class TestUtils:
-    """Test utility functions."""
-
-    def test_normalize_header_handles_duplicates(self):
-        """Test normalize_header handles duplicate column names."""
-        from src.utils import normalize_header
-
-        headers = ["Name", "Name", "Name"]
-        normalized = normalize_header(headers)
-
-        assert normalized[0] == "name"
-        assert normalized[1] == "name_1"
-        assert normalized[2] == "name_2"
-
-    def test_normalize_header_handles_empty(self):
-        """Test normalize_header handles empty headers."""
-        from src.utils import normalize_header
-
-        headers = ["Name", "", None, "Email"]
-        normalized = normalize_header(headers)
-
-        assert normalized[0] == "name"
-        assert "column_1" in normalized[1]
-        assert "column_2" in normalized[2]
-        assert normalized[3] == "email"
-
-    def test_normalize_header_handles_special_chars(self):
-        """Test normalize_header handles special characters."""
-        from src.utils import normalize_header
-
-        headers = ["First Name", "E-Mail", "Phone #"]
-        normalized = normalize_header(headers)
-
-        # Special chars should be replaced with underscores
-        assert "_" in normalized[0] or "first" in normalized[0].lower()
-
-    def test_build_range_notation(self):
-        """Test build_range_notation creates correct A1 notation."""
-        from src.utils import build_range_notation
-
-        # Basic range
-        result = build_range_notation("Sheet1", "A", 1, "D", 10)
-        assert "Sheet1" in result
-        assert "A1" in result
-        assert "D10" in result
-
-        # Sheet with spaces
-        result = build_range_notation("My Sheet", "A", 1, "B", 5)
-        assert "My Sheet" in result or "'My Sheet'" in result
-
-    def test_parse_spreadsheet_id_from_url(self):
-        """Test parse_spreadsheet_id extracts ID from URL."""
-        from src.utils import parse_spreadsheet_id
-
-        url = "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit"
-        result = parse_spreadsheet_id(url)
-
-        assert result == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-
-    def test_parse_spreadsheet_id_returns_id_if_not_url(self):
-        """Test parse_spreadsheet_id returns input if already an ID."""
-        from src.utils import parse_spreadsheet_id
-
-        id_only = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-        result = parse_spreadsheet_id(id_only)
-
-        assert result == id_only
-
-    def test_infer_json_schema_type(self):
-        """Test infer_json_schema_type for various values."""
-        from src.utils import infer_json_schema_type
-
-        # String
-        result = infer_json_schema_type("hello")
-        assert "string" in result["type"]
-
-        # Integer
-        result = infer_json_schema_type(42)
-        assert "integer" in result["type"]
-
-        # Float
-        result = infer_json_schema_type(3.14)
-        assert "number" in result["type"]
-
-        # Boolean
-        result = infer_json_schema_type(True)
-        assert "boolean" in result["type"]
-
-        # None
-        result = infer_json_schema_type(None)
-        assert "null" in result["type"]
-
-        # Date string
-        result = infer_json_schema_type("2023-12-25")
-        assert "format" in result
-        assert result["format"] == "date"
+                            assert isinstance(results, list)
+                            for result in results:
+                                assert hasattr(result, 'stream_name')
+                                assert hasattr(result, 'records_count')
+                                assert hasattr(result, 'success')

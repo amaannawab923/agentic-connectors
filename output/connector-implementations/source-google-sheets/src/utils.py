@@ -1,385 +1,454 @@
 """
-Utility functions for Google Sheets connector.
+Utility functions and custom exceptions for Google Sheets connector.
 
-Provides helper functions for:
-- Header normalization
-- Range notation building
-- Schema inference
-- Data type detection
+This module provides:
+- Custom exception classes for error handling
+- Helper functions for data transformation
+- A1 notation utilities
 """
 
+from typing import Any, Dict, List, Optional, Tuple
 import re
-from typing import Any, Dict, List, Optional, Union
-from urllib.parse import urlparse, parse_qs
+from datetime import datetime
 
 
-def normalize_header(headers: List[Any]) -> List[str]:
+# =============================================================================
+# Custom Exceptions
+# =============================================================================
+
+class GoogleSheetsError(Exception):
+    """Base exception for Google Sheets connector errors."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(self.message)
+
+
+class AuthenticationError(GoogleSheetsError):
+    """Raised when authentication fails."""
+
+    def __init__(self, message: str = "Authentication failed"):
+        super().__init__(message, status_code=401)
+
+
+class RateLimitError(GoogleSheetsError):
+    """Raised when rate limit is exceeded."""
+
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        retry_after: Optional[float] = None
+    ):
+        super().__init__(message, status_code=429)
+        self.retry_after = retry_after
+
+
+class NotFoundError(GoogleSheetsError):
+    """Raised when a resource is not found."""
+
+    def __init__(self, message: str = "Resource not found"):
+        super().__init__(message, status_code=404)
+
+
+class InvalidRequestError(GoogleSheetsError):
+    """Raised when the request is invalid."""
+
+    def __init__(self, message: str = "Invalid request"):
+        super().__init__(message, status_code=400)
+
+
+class ConnectionError(GoogleSheetsError):
+    """Raised when connection to the API fails."""
+
+    def __init__(self, message: str = "Connection failed"):
+        super().__init__(message, status_code=None)
+
+
+class ServerError(GoogleSheetsError):
+    """Raised when the server returns an error."""
+
+    def __init__(self, message: str = "Server error", status_code: int = 500):
+        super().__init__(message, status_code=status_code)
+
+
+# =============================================================================
+# A1 Notation Utilities
+# =============================================================================
+
+def column_number_to_letter(column_number: int) -> str:
     """
-    Normalize column headers to valid, unique identifiers.
-
-    Handles:
-    - Empty headers (generates column_N names)
-    - Duplicate headers (appends _N suffix)
-    - Non-string values (converts to string)
-    - Special characters (replaces with underscores)
+    Convert a column number to A1 notation letter(s).
 
     Args:
-        headers: List of raw header values from the spreadsheet.
+        column_number: 1-indexed column number
 
     Returns:
-        List of normalized, unique header strings.
+        Column letter(s) in A1 notation (e.g., 'A', 'Z', 'AA', 'AZ')
 
-    Example:
-        >>> normalize_header(["Name", "Email", "", "Name", None])
-        ["name", "email", "column_2", "name_1", "column_4"]
+    Examples:
+        >>> column_number_to_letter(1)
+        'A'
+        >>> column_number_to_letter(26)
+        'Z'
+        >>> column_number_to_letter(27)
+        'AA'
     """
-    normalized = []
-    seen: Dict[str, int] = {}
+    result = ""
+    while column_number > 0:
+        column_number, remainder = divmod(column_number - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
-    for i, header in enumerate(headers):
-        # Handle empty or None headers
-        if header is None or (isinstance(header, str) and header.strip() == ""):
-            base_name = f"column_{i}"
-        else:
-            # Convert to string and clean
-            base_name = str(header).strip()
-            # Replace special characters with underscores
-            base_name = re.sub(r"[^\w\s]", "_", base_name)
-            # Replace whitespace with underscores
-            base_name = re.sub(r"\s+", "_", base_name)
-            # Remove leading/trailing underscores
-            base_name = base_name.strip("_")
-            # Convert to lowercase
-            base_name = base_name.lower()
-            # Ensure it starts with a letter or underscore
-            if base_name and not base_name[0].isalpha() and base_name[0] != "_":
-                base_name = f"col_{base_name}"
-            # Handle empty result after cleaning
-            if not base_name:
-                base_name = f"column_{i}"
 
-        # Handle duplicates
-        if base_name in seen:
-            seen[base_name] += 1
-            unique_name = f"{base_name}_{seen[base_name]}"
-        else:
-            seen[base_name] = 0
-            unique_name = base_name
+def column_letter_to_number(column_letter: str) -> int:
+    """
+    Convert A1 notation letter(s) to a column number.
 
-        normalized.append(unique_name)
+    Args:
+        column_letter: Column letter(s) in A1 notation
 
-    return normalized
+    Returns:
+        1-indexed column number
+
+    Examples:
+        >>> column_letter_to_number('A')
+        1
+        >>> column_letter_to_number('Z')
+        26
+        >>> column_letter_to_number('AA')
+        27
+    """
+    result = 0
+    for char in column_letter.upper():
+        result = result * 26 + (ord(char) - ord('A') + 1)
+    return result
 
 
 def build_range_notation(
     sheet_name: str,
-    start_col: str = "A",
     start_row: Optional[int] = None,
-    end_col: Optional[str] = None,
     end_row: Optional[int] = None,
+    start_col: Optional[str] = None,
+    end_col: Optional[str] = None
 ) -> str:
     """
-    Build A1 notation range string.
+    Build A1 notation range string for a sheet.
 
     Args:
-        sheet_name: Name of the sheet (will be quoted if needed).
-        start_col: Starting column (default "A").
-        start_row: Starting row number (1-indexed, optional).
-        end_col: Ending column (optional).
-        end_row: Ending row number (optional).
+        sheet_name: Name of the sheet
+        start_row: Starting row number (1-indexed)
+        end_row: Ending row number (1-indexed)
+        start_col: Starting column letter
+        end_col: Ending column letter
 
     Returns:
-        A1 notation range string.
+        A1 notation range string
 
     Examples:
-        >>> build_range_notation("Sheet1", "A", 1, "D", 10)
-        "'Sheet1'!A1:D10"
-        >>> build_range_notation("My Sheet", "A", end_col="Z")
-        "'My Sheet'!A:Z"
+        >>> build_range_notation("Sheet1")
+        "'Sheet1'"
+        >>> build_range_notation("Sheet1", start_row=1, end_row=100)
+        "'Sheet1'!1:100"
+        >>> build_range_notation("Sheet1", start_row=1, start_col="A", end_col="Z")
+        "'Sheet1'!A1:Z"
     """
-    # Quote sheet name if it contains spaces or special characters
-    if " " in sheet_name or "'" in sheet_name or "!" in sheet_name:
-        # Escape single quotes by doubling them
-        escaped_name = sheet_name.replace("'", "''")
-        quoted_name = f"'{escaped_name}'"
+    # Escape sheet name with single quotes
+    escaped_name = f"'{sheet_name}'"
+
+    # Build range part
+    if start_row is None and start_col is None:
+        return escaped_name
+
+    range_parts = []
+
+    # Start cell
+    start_cell = ""
+    if start_col:
+        start_cell += start_col
+    if start_row:
+        start_cell += str(start_row)
+
+    # End cell
+    end_cell = ""
+    if end_col:
+        end_cell += end_col
+    if end_row:
+        end_cell += str(end_row)
+
+    if start_cell and end_cell:
+        return f"{escaped_name}!{start_cell}:{end_cell}"
+    elif start_cell:
+        return f"{escaped_name}!{start_cell}"
     else:
-        quoted_name = f"'{sheet_name}'"
-
-    # Build range parts
-    start_part = start_col
-    if start_row is not None:
-        start_part += str(start_row)
-
-    if end_col is not None or end_row is not None:
-        end_part = end_col or start_col
-        if end_row is not None:
-            end_part += str(end_row)
-        return f"{quoted_name}!{start_part}:{end_part}"
-    else:
-        return f"{quoted_name}!{start_part}"
+        return escaped_name
 
 
-def parse_spreadsheet_id(url_or_id: str) -> str:
+def parse_range_notation(range_notation: str) -> Tuple[str, Optional[str], Optional[str]]:
     """
-    Extract spreadsheet ID from a Google Sheets URL or return the ID if already extracted.
+    Parse A1 notation range string.
 
     Args:
-        url_or_id: Google Sheets URL or spreadsheet ID.
+        range_notation: A1 notation range string
 
     Returns:
-        The spreadsheet ID.
-
-    Examples:
-        >>> parse_spreadsheet_id("https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit")
-        "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-        >>> parse_spreadsheet_id("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms")
-        "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+        Tuple of (sheet_name, start_cell, end_cell)
     """
-    # Check if it's already just an ID
-    if not url_or_id.startswith("http"):
-        return url_or_id
+    # Handle quoted sheet names
+    if range_notation.startswith("'"):
+        # Find the closing quote
+        end_quote = range_notation.find("'", 1)
+        if end_quote == -1:
+            raise InvalidRequestError(f"Invalid range notation: {range_notation}")
 
-    # Parse URL
-    parsed = urlparse(url_or_id)
+        sheet_name = range_notation[1:end_quote]
+        remainder = range_notation[end_quote + 1:]
+    else:
+        # Sheet name before !
+        parts = range_notation.split("!", 1)
+        sheet_name = parts[0]
+        remainder = "!" + parts[1] if len(parts) > 1 else ""
 
-    # Handle different URL formats
-    path_parts = parsed.path.split("/")
+    if not remainder or remainder == "!":
+        return sheet_name, None, None
 
-    for i, part in enumerate(path_parts):
-        if part == "d" and i + 1 < len(path_parts):
-            return path_parts[i + 1]
+    # Parse range part (after !)
+    range_part = remainder[1:] if remainder.startswith("!") else remainder
 
-    # Try to extract from query parameters (some export URLs)
-    query_params = parse_qs(parsed.query)
-    if "id" in query_params:
-        return query_params["id"][0]
-
-    raise ValueError(f"Could not extract spreadsheet ID from: {url_or_id}")
+    if ":" in range_part:
+        start_cell, end_cell = range_part.split(":", 1)
+        return sheet_name, start_cell, end_cell
+    else:
+        return sheet_name, range_part, None
 
 
-def infer_json_schema_type(value: Any) -> Dict[str, Any]:
+# =============================================================================
+# Data Transformation Utilities
+# =============================================================================
+
+def sanitize_column_name(name: str) -> str:
     """
-    Infer JSON Schema type from a Python value.
+    Sanitize a column name for use as a field name.
 
     Args:
-        value: A Python value.
+        name: Original column name
 
     Returns:
-        JSON Schema type definition.
+        Sanitized column name
     """
-    if value is None:
-        return {"type": ["null", "string"]}
+    if not name:
+        return "unnamed_column"
+
+    # Replace special characters with underscores
+    sanitized = re.sub(r'[^\w\s]', '_', name)
+
+    # Replace spaces with underscores
+    sanitized = re.sub(r'\s+', '_', sanitized)
+
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+
+    # Ensure it doesn't start with a number
+    if sanitized and sanitized[0].isdigit():
+        sanitized = f"col_{sanitized}"
+
+    return sanitized.lower() or "unnamed_column"
+
+
+def infer_type_from_value(value: Any) -> str:
+    """
+    Infer JSON schema type from a Python value.
+
+    Args:
+        value: The value to analyze
+
+    Returns:
+        JSON schema type string
+    """
+    if value is None or value == "":
+        return "null"
 
     if isinstance(value, bool):
-        return {"type": ["null", "boolean"]}
+        return "boolean"
 
     if isinstance(value, int):
-        return {"type": ["null", "integer"]}
+        return "integer"
 
     if isinstance(value, float):
-        return {"type": ["null", "number"]}
+        return "number"
 
     if isinstance(value, str):
-        # Check for date/time patterns
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
-            return {"type": ["null", "string"], "format": "date"}
-        if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}", value):
-            return {"type": ["null", "string"], "format": "date-time"}
-        return {"type": ["null", "string"]}
+        # Try to parse as number
+        try:
+            float(value)
+            return "number"
+        except (ValueError, TypeError):
+            pass
 
-    if isinstance(value, list):
-        return {"type": ["null", "array"], "items": {}}
+        # Try to parse as boolean
+        if value.lower() in ("true", "false"):
+            return "boolean"
 
-    if isinstance(value, dict):
-        return {"type": ["null", "object"]}
+        # Try to parse as date/datetime
+        date_patterns = [
+            r'^\d{4}-\d{2}-\d{2}$',  # ISO date
+            r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}',  # ISO datetime
+            r'^\d{1,2}/\d{1,2}/\d{4}$',  # US date
+            r'^\d{1,2}-\d{1,2}-\d{4}$',  # EU date
+        ]
+        for pattern in date_patterns:
+            if re.match(pattern, value):
+                return "string"  # Keep as string but could be datetime
 
-    return {"type": ["null", "string"]}
+        return "string"
 
-
-def merge_schema_types(type1: Dict[str, Any], type2: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Merge two JSON Schema type definitions.
-
-    Used when inferring schema from multiple sample values.
-
-    Args:
-        type1: First type definition.
-        type2: Second type definition.
-
-    Returns:
-        Merged type definition.
-    """
-    # Handle null types
-    types1 = type1.get("type", [])
-    types2 = type2.get("type", [])
-
-    if isinstance(types1, str):
-        types1 = [types1]
-    if isinstance(types2, str):
-        types2 = [types2]
-
-    # Combine types, keeping null
-    combined = set(types1) | set(types2)
-
-    # Simplify: if we have both integer and number, keep number
-    if "integer" in combined and "number" in combined:
-        combined.discard("integer")
-
-    # If we have multiple non-null types, fall back to string
-    non_null_types = combined - {"null"}
-    if len(non_null_types) > 1:
-        combined = {"null", "string"}
-
-    result = {"type": list(combined)}
-
-    # Preserve format if both have it
-    if "format" in type1 and "format" in type2 and type1["format"] == type2["format"]:
-        result["format"] = type1["format"]
-
-    return result
+    return "string"
 
 
-def infer_schema_from_values(
+def infer_schema_from_data(
     headers: List[str],
-    sample_rows: List[List[Any]],
+    sample_data: List[List[Any]],
+    sample_size: int = 100
 ) -> Dict[str, Any]:
     """
-    Infer JSON Schema from column headers and sample data.
+    Infer JSON schema from headers and sample data.
 
     Args:
-        headers: List of normalized column headers.
-        sample_rows: List of rows (each row is a list of values).
+        headers: List of column headers
+        sample_data: Sample rows of data
+        sample_size: Number of rows to sample for type inference
 
     Returns:
-        JSON Schema dictionary.
+        JSON schema dictionary
     """
-    properties: Dict[str, Dict[str, Any]] = {}
+    properties = {}
 
-    # Initialize with null types
-    for header in headers:
-        properties[header] = {"type": ["null", "string"]}
+    # Limit sample size
+    sample_rows = sample_data[:sample_size]
 
-    # Analyze sample values
-    for row in sample_rows:
-        for i, header in enumerate(headers):
-            if i < len(row):
-                value = row[i]
-                if value is not None and value != "":
-                    inferred = infer_json_schema_type(value)
-                    properties[header] = merge_schema_types(
-                        properties[header],
-                        inferred,
-                    )
+    for col_idx, header in enumerate(headers):
+        field_name = sanitize_column_name(header) if header else f"column_{col_idx + 1}"
+
+        # Collect types from sample data
+        types_found = set()
+        for row in sample_rows:
+            if col_idx < len(row):
+                value = row[col_idx]
+                inferred_type = infer_type_from_value(value)
+                types_found.add(inferred_type)
+
+        # Determine the best type
+        types_found.discard("null")  # Remove null for now
+
+        if not types_found:
+            field_type = ["null", "string"]
+        elif len(types_found) == 1:
+            field_type = ["null", types_found.pop()]
+        elif "string" in types_found:
+            # If string is present, default to string
+            field_type = ["null", "string"]
+        elif "number" in types_found:
+            # Prefer number over integer
+            field_type = ["null", "number"]
+        else:
+            field_type = ["null", "string"]
+
+        properties[field_name] = {
+            "type": field_type,
+            "original_name": header
+        }
 
     return {
         "type": "object",
         "properties": properties,
-        "additionalProperties": False,
+        "additionalProperties": True
     }
 
 
-def chunk_list(lst: List[Any], chunk_size: int) -> List[List[Any]]:
+def normalize_row(
+    row: List[Any],
+    headers: List[str],
+    row_number: int
+) -> Dict[str, Any]:
     """
-    Split a list into chunks of specified size.
+    Normalize a row of data into a dictionary.
 
     Args:
-        lst: List to chunk.
-        chunk_size: Maximum size of each chunk.
+        row: List of cell values
+        headers: List of column headers
+        row_number: The 1-indexed row number
 
     Returns:
-        List of chunks.
-
-    Example:
-        >>> chunk_list([1, 2, 3, 4, 5], 2)
-        [[1, 2], [3, 4], [5]]
+        Dictionary with column names as keys
     """
-    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+    record = {"_row_number": row_number}
+
+    for col_idx, header in enumerate(headers):
+        field_name = sanitize_column_name(header) if header else f"column_{col_idx + 1}"
+
+        if col_idx < len(row):
+            value = row[col_idx]
+            # Convert empty strings to None
+            record[field_name] = value if value != "" else None
+        else:
+            record[field_name] = None
+
+    return record
 
 
-def safe_get(
-    data: Union[Dict[str, Any], List[Any]],
-    *keys: Union[str, int],
-    default: Any = None,
-) -> Any:
+def parse_spreadsheet_id(url_or_id: str) -> str:
     """
-    Safely get a nested value from a dictionary or list.
+    Extract spreadsheet ID from a URL or return the ID if already valid.
 
     Args:
-        data: Dictionary or list to traverse.
-        *keys: Keys or indices to follow.
-        default: Default value if path doesn't exist.
+        url_or_id: Google Sheets URL or spreadsheet ID
 
     Returns:
-        Value at the specified path, or default.
+        Spreadsheet ID
 
-    Example:
-        >>> data = {"a": {"b": [1, 2, 3]}}
-        >>> safe_get(data, "a", "b", 1)
-        2
-        >>> safe_get(data, "a", "c", default="not found")
-        "not found"
+    Raises:
+        InvalidRequestError: If the URL/ID is invalid
     """
-    current = data
-    for key in keys:
-        try:
-            if isinstance(current, dict):
-                current = current.get(key, default)
-            elif isinstance(current, (list, tuple)):
-                current = current[key] if -len(current) <= key < len(current) else default
-            else:
-                return default
-            if current is default:
-                return default
-        except (KeyError, IndexError, TypeError):
-            return default
-    return current
+    # If it looks like a URL, extract the ID
+    if "docs.google.com" in url_or_id or "spreadsheets" in url_or_id:
+        # Pattern for extracting spreadsheet ID from various URL formats
+        patterns = [
+            r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
+            r'/spreadsheets/d/([a-zA-Z0-9-_]+)/edit',
+            r'key=([a-zA-Z0-9-_]+)',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, url_or_id)
+            if match:
+                return match.group(1)
+
+        raise InvalidRequestError(f"Could not extract spreadsheet ID from URL: {url_or_id}")
+
+    # Validate as a raw ID
+    if re.match(r'^[a-zA-Z0-9-_]+$', url_or_id):
+        return url_or_id
+
+    raise InvalidRequestError(f"Invalid spreadsheet ID: {url_or_id}")
 
 
-def column_letter_to_index(letter: str) -> int:
+def format_bytes(num_bytes: int) -> str:
     """
-    Convert a column letter (A, B, ..., Z, AA, AB, ...) to a 0-based index.
+    Format bytes to human-readable string.
 
     Args:
-        letter: Column letter(s) in A1 notation.
+        num_bytes: Number of bytes
 
     Returns:
-        0-based column index.
-
-    Example:
-        >>> column_letter_to_index("A")
-        0
-        >>> column_letter_to_index("Z")
-        25
-        >>> column_letter_to_index("AA")
-        26
+        Human-readable string
     """
-    result = 0
-    for char in letter.upper():
-        result = result * 26 + (ord(char) - ord("A") + 1)
-    return result - 1
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if abs(num_bytes) < 1024.0:
+            return f"{num_bytes:.2f} {unit}"
+        num_bytes /= 1024.0
+    return f"{num_bytes:.2f} PB"
 
 
-def index_to_column_letter(index: int) -> str:
-    """
-    Convert a 0-based column index to a column letter.
-
-    Args:
-        index: 0-based column index.
-
-    Returns:
-        Column letter(s) in A1 notation.
-
-    Example:
-        >>> index_to_column_letter(0)
-        "A"
-        >>> index_to_column_letter(25)
-        "Z"
-        >>> index_to_column_letter(26)
-        "AA"
-    """
-    result = ""
-    index += 1  # Convert to 1-based
-    while index > 0:
-        index, remainder = divmod(index - 1, 26)
-        result = chr(ord("A") + remainder) + result
-    return result
+def get_timestamp() -> str:
+    """Get current ISO 8601 timestamp."""
+    return datetime.utcnow().isoformat() + "Z"

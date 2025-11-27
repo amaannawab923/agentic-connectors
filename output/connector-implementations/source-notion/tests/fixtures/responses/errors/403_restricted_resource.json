@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 403,
+  "code": "restricted_resource",
+  "message": "Given the bearer token used, the client doesn't have permission to perform this operation."
+}

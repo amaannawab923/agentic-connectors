@@ -1,0 +1,50 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "page",
+      "id": "page-result-1234-5678-9abc-def012345678",
+      "created_time": "2024-01-15T10:30:00.000Z",
+      "created_by": {
+        "object": "user",
+        "id": "12345678-90ab-cdef-1234-567890abcdef"
+      },
+      "last_edited_time": "2024-01-20T14:15:00.000Z",
+      "last_edited_by": {
+        "object": "user",
+        "id": "12345678-90ab-cdef-1234-567890abcdef"
+      },
+      "cover": null,
+      "icon": {
+        "type": "emoji",
+        "emoji": "📄"
+      },
+      "parent": {
+        "type": "workspace",
+        "workspace": true
+      },
+      "archived": false,
+      "properties": {
+        "title": {
+          "id": "title",
+          "type": "title",
+          "title": [
+            {
+              "type": "text",
+              "text": {
+                "content": "API Documentation",
+                "link": null
+              },
+              "plain_text": "API Documentation"
+            }
+          ]
+        }
+      },
+      "url": "https://www.notion.so/pageresult123456789abc"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false,
+  "type": "page_or_database",
+  "page_or_database": {}
+}

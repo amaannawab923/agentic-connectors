@@ -1,402 +1,480 @@
 """
-Stream definitions for Google Sheets connector.
+Data stream definitions for Google Sheets connector.
 
-Handles reading data from individual sheets with support for:
-- Batched reading for large sheets
-- Header normalization
-- Row number tracking
+This module defines stream classes for extracting data from Google Sheets,
+including schema inference and record transformation.
 """
 
+from typing import Any, Dict, Iterator, List, Optional
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, Generator, List, Optional
 
 from .client import GoogleSheetsClient
-from .utils import normalize_header, build_range_notation
+from .utils import (
+    sanitize_column_name,
+    infer_schema_from_data,
+    normalize_row,
+    GoogleSheetsError,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
+class StreamSchema:
+    """JSON Schema representation for a stream."""
+
+    type: str = "object"
+    properties: Dict[str, Any] = field(default_factory=dict)
+    required: List[str] = field(default_factory=list)
+    additional_properties: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON schema dictionary."""
+        return {
+            "type": self.type,
+            "properties": self.properties,
+            "required": self.required,
+            "additionalProperties": self.additional_properties
+        }
+
+    @classmethod
+    def from_headers(
+        cls,
+        headers: List[str],
+        sample_data: Optional[List[List[Any]]] = None,
+        sanitize: bool = True
+    ) -> "StreamSchema":
+        """
+        Create schema from headers and optional sample data.
+
+        Args:
+            headers: List of column headers
+            sample_data: Optional sample data for type inference
+            sanitize: Whether to sanitize column names
+
+        Returns:
+            StreamSchema instance
+        """
+        properties = {}
+
+        if sample_data:
+            # Infer types from sample data
+            inferred = infer_schema_from_data(headers, sample_data)
+            for header in headers:
+                field_name = sanitize_column_name(header) if sanitize else header
+                if field_name in inferred.get("properties", {}):
+                    properties[field_name] = inferred["properties"][field_name]
+                else:
+                    properties[field_name] = {
+                        "type": ["null", "string"],
+                        "original_name": header
+                    }
+        else:
+            # Default to string type
+            for header in headers:
+                field_name = sanitize_column_name(header) if sanitize else header
+                properties[field_name] = {
+                    "type": ["null", "string"],
+                    "original_name": header
+                }
+
+        # Add _row_number field
+        properties["_row_number"] = {
+            "type": "integer",
+            "description": "1-indexed row number in the sheet"
+        }
+
+        return cls(properties=properties)
+
+
+@dataclass
 class StreamMetadata:
-    """Metadata about a stream (sheet)."""
+    """Metadata for a stream."""
 
     name: str
     sheet_id: int
     row_count: int
     column_count: int
-    frozen_row_count: int = 0
-    frozen_column_count: int = 0
+    schema: StreamSchema
+    headers: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "name": self.name,
+            "sheet_id": self.sheet_id,
+            "row_count": self.row_count,
+            "column_count": self.column_count,
+            "schema": self.schema.to_dict(),
+            "headers": self.headers
+        }
+
+
+class BaseStream(ABC):
+    """Abstract base class for data streams."""
+
+    def __init__(
+        self,
+        name: str,
+        client: GoogleSheetsClient,
+        sanitize_names: bool = True,
+        include_row_numbers: bool = True
+    ):
+        """
+        Initialize base stream.
+
+        Args:
+            name: Stream name
+            client: Google Sheets client
+            sanitize_names: Whether to sanitize column names
+            include_row_numbers: Whether to include row numbers
+        """
+        self.name = name
+        self.client = client
+        self.sanitize_names = sanitize_names
+        self.include_row_numbers = include_row_numbers
+        self._schema: Optional[StreamSchema] = None
+        self._headers: Optional[List[str]] = None
 
     @property
-    def estimated_record_count(self) -> int:
-        """Estimate the number of data records (excluding header)."""
-        return max(0, self.row_count - 1)
-
-
-@dataclass
-class StreamSchema:
-    """Schema information for a stream."""
-
-    stream_name: str
-    json_schema: Dict[str, Any]
-    key_properties: List[str]
+    @abstractmethod
+    def primary_key(self) -> Optional[List[str]]:
+        """Get the primary key fields for this stream."""
+        pass
 
     @property
-    def properties(self) -> Dict[str, Any]:
-        """Get the schema properties."""
-        return self.json_schema.get("properties", {})
+    @abstractmethod
+    def replication_method(self) -> str:
+        """Get the replication method (FULL_REFRESH or INCREMENTAL)."""
+        pass
 
-    @property
-    def column_names(self) -> List[str]:
-        """Get list of column names."""
-        return list(self.properties.keys())
+    @abstractmethod
+    def get_schema(self) -> StreamSchema:
+        """Get the schema for this stream."""
+        pass
+
+    @abstractmethod
+    def read_records(self) -> Iterator[Dict[str, Any]]:
+        """Read records from the stream."""
+        pass
+
+    def get_metadata(self) -> Dict[str, Any]:
+        """Get stream metadata."""
+        return {
+            "name": self.name,
+            "primary_key": self.primary_key,
+            "replication_method": self.replication_method,
+            "schema": self.get_schema().to_dict()
+        }
 
 
-class SheetStream:
+class SheetStream(BaseStream):
     """
-    Represents a single sheet as a data stream.
+    Stream for a single sheet in a spreadsheet.
 
-    Handles:
-    - Reading data in batches to manage memory and API quotas
-    - Header normalization (handling duplicates, empty headers)
-    - Converting rows to dictionaries with proper column mapping
+    This stream reads data from a specific sheet, treating the first row
+    as headers and subsequent rows as data records.
     """
 
     def __init__(
         self,
+        name: str,
         client: GoogleSheetsClient,
-        spreadsheet_id: str,
-        sheet_name: str,
+        sheet_id: int,
         header_row: int = 1,
-        batch_size: int = 1000,
-        include_row_number: bool = True,
-        max_columns: str = "ZZ",
+        skip_rows: int = 0,
+        range_notation: Optional[str] = None,
+        sanitize_names: bool = True,
+        include_row_numbers: bool = True,
+        batch_size: int = 200
     ):
         """
-        Initialize a sheet stream.
+        Initialize sheet stream.
 
         Args:
-            client: Google Sheets API client.
-            spreadsheet_id: The spreadsheet ID.
-            sheet_name: Name of the sheet to read.
-            header_row: Row number containing headers (1-indexed).
-            batch_size: Number of rows to fetch per API call.
-            include_row_number: Include a '_row_number' field in records.
-            max_columns: Maximum column to read (A1 notation, e.g., "ZZ").
+            name: Sheet name (also used as stream name)
+            client: Google Sheets client
+            sheet_id: Sheet ID within the spreadsheet
+            header_row: Row number containing headers (1-indexed)
+            skip_rows: Number of rows to skip after headers
+            range_notation: Optional specific range to read
+            sanitize_names: Whether to sanitize column names
+            include_row_numbers: Whether to include row numbers
+            batch_size: Number of rows to read per API call
         """
-        self.client = client
-        self.spreadsheet_id = spreadsheet_id
-        self.sheet_name = sheet_name
+        super().__init__(name, client, sanitize_names, include_row_numbers)
+        self.sheet_id = sheet_id
         self.header_row = header_row
+        self.skip_rows = skip_rows
+        self.range_notation = range_notation
         self.batch_size = batch_size
-        self.include_row_number = include_row_number
-        self.max_columns = max_columns
-
-        self._headers: Optional[List[str]] = None
-        self._raw_headers: Optional[List[str]] = None
+        self._row_count: Optional[int] = None
+        self._column_count: Optional[int] = None
 
     @property
-    def headers(self) -> List[str]:
-        """Get normalized column headers, fetching if necessary."""
-        if self._headers is None:
-            self._fetch_headers()
-        return self._headers
-
-    @property
-    def raw_headers(self) -> List[str]:
-        """Get original column headers without normalization."""
-        if self._raw_headers is None:
-            self._fetch_headers()
-        return self._raw_headers
-
-    def _fetch_headers(self) -> None:
-        """Fetch and normalize headers from the spreadsheet."""
-        header_range = build_range_notation(
-            self.sheet_name,
-            start_row=self.header_row,
-            end_row=self.header_row,
-            end_col=self.max_columns,
-        )
-
-        result = self.client.get_values(
-            self.spreadsheet_id,
-            header_range,
-            value_render_option="FORMATTED_VALUE",
-        )
-
-        self._raw_headers = result.get("values", [[]])[0] if result.get("values") else []
-        self._headers = normalize_header(self._raw_headers)
-
-        logger.debug(f"Fetched {len(self._headers)} headers from '{self.sheet_name}'")
-
-    def _row_to_record(
-        self,
-        row: List[Any],
-        row_number: int,
-    ) -> Dict[str, Any]:
+    def primary_key(self) -> Optional[List[str]]:
         """
-        Convert a row to a record dictionary.
+        Get primary key for this stream.
 
-        Args:
-            row: List of cell values.
-            row_number: Original row number in the spreadsheet (1-indexed).
+        Uses _row_number as the primary key since Google Sheets
+        doesn't have a native primary key concept.
+        """
+        if self.include_row_numbers:
+            return ["_row_number"]
+        return None
+
+    @property
+    def replication_method(self) -> str:
+        """
+        Get replication method.
+
+        Google Sheets doesn't support change tracking,
+        so we use FULL_REFRESH.
+        """
+        return "FULL_REFRESH"
+
+    @property
+    def row_count(self) -> int:
+        """Get the row count for this sheet."""
+        if self._row_count is None:
+            self._row_count = self.client.get_row_count(self.name)
+        return self._row_count
+
+    @property
+    def column_count(self) -> int:
+        """Get the column count for this sheet."""
+        if self._column_count is None:
+            self._column_count = self.client.get_column_count(self.name)
+        return self._column_count
+
+    def get_headers(self) -> List[str]:
+        """
+        Get column headers for this sheet.
 
         Returns:
-            Dictionary mapping column headers to values.
+            List of header strings
         """
-        record = {}
+        if self._headers is None:
+            self._headers = self.client.get_headers(self.name, self.header_row)
+        return self._headers
 
-        # Add row number if configured
-        if self.include_row_number:
-            record["_row_number"] = row_number
+    def get_schema(self) -> StreamSchema:
+        """
+        Get the schema for this sheet.
 
-        # Map values to headers
-        for i, header in enumerate(self.headers):
-            if i < len(row):
-                value = row[i]
-                # Convert empty strings to None for consistency
-                if value == "":
-                    value = None
-                record[header] = value
-            else:
-                record[header] = None
+        Infers schema from headers and optional sample data.
 
-        return record
+        Returns:
+            StreamSchema instance
+        """
+        if self._schema is not None:
+            return self._schema
 
-    def read(self) -> Generator[Dict[str, Any], None, None]:
+        headers = self.get_headers()
+
+        if not headers:
+            self._schema = StreamSchema()
+            return self._schema
+
+        # Get sample data for type inference
+        start_row = self.header_row + 1 + self.skip_rows
+        try:
+            sample_data = []
+            for batch in self.client.read_sheet_in_batches(
+                self.name,
+                start_row=start_row,
+                batch_size=min(100, self.batch_size)
+            ):
+                sample_data.extend(batch)
+                if len(sample_data) >= 100:
+                    break
+        except GoogleSheetsError:
+            sample_data = []
+
+        self._schema = StreamSchema.from_headers(
+            headers,
+            sample_data[:100] if sample_data else None,
+            sanitize=self.sanitize_names
+        )
+
+        return self._schema
+
+    def read_records(self) -> Iterator[Dict[str, Any]]:
         """
         Read all records from the sheet.
 
         Yields:
-            Dictionary for each row with column headers as keys.
+            Dictionary records with column names as keys
         """
-        # Ensure headers are loaded
-        headers = self.headers
+        headers = self.get_headers()
 
         if not headers:
-            logger.warning(f"No headers found in sheet '{self.sheet_name}'")
+            logger.warning(f"No headers found in sheet '{self.name}'")
             return
 
-        # Start reading from the row after headers
-        start_row = self.header_row + 1
-        total_records = 0
-        empty_batch_count = 0
-        max_empty_batches = 3  # Stop after this many consecutive empty batches
+        # Calculate start row (header row + 1 + skip rows)
+        start_row = self.header_row + 1 + self.skip_rows
 
-        while True:
-            end_row = start_row + self.batch_size - 1
+        logger.info(f"Starting to read records from sheet '{self.name}'")
 
-            data_range = build_range_notation(
-                self.sheet_name,
-                start_row=start_row,
-                end_row=end_row,
-                end_col=self.max_columns,
-            )
+        record_count = 0
 
-            logger.debug(f"Fetching batch: {data_range}")
+        for batch in self.client.read_sheet_in_batches(
+            self.name,
+            start_row=start_row,
+            batch_size=self.batch_size
+        ):
+            for row_offset, row in enumerate(batch):
+                row_number = start_row + record_count
 
-            result = self.client.get_values(
-                self.spreadsheet_id,
-                data_range,
-                value_render_option="UNFORMATTED_VALUE",
-                date_time_render_option="FORMATTED_STRING",
-            )
-
-            rows = result.get("values", [])
-
-            if not rows:
-                empty_batch_count += 1
-                if empty_batch_count >= max_empty_batches:
-                    logger.debug(
-                        f"Stopping after {max_empty_batches} consecutive empty batches"
-                    )
-                    break
-                # Move to next batch in case there's a gap
-                start_row = end_row + 1
-                continue
-
-            # Reset empty batch counter when we find data
-            empty_batch_count = 0
-
-            # Process each row
-            for i, row in enumerate(rows):
-                row_number = start_row + i
-
-                # Skip completely empty rows
-                if not any(cell for cell in row if cell is not None and cell != ""):
-                    continue
-
-                record = self._row_to_record(row, row_number)
-                total_records += 1
+                record = self._transform_row(row, headers, row_number)
                 yield record
 
-            # Check if we've reached the end
-            if len(rows) < self.batch_size:
-                logger.debug(
-                    f"Last batch contained {len(rows)} rows (less than batch size)"
-                )
-                break
+                record_count += 1
 
-            start_row = end_row + 1
+        logger.info(f"Read {record_count} records from sheet '{self.name}'")
 
-        logger.info(
-            f"Read {total_records} records from sheet '{self.sheet_name}'"
-        )
-
-    def read_range(
+    def _transform_row(
         self,
-        start_row: int,
-        end_row: int,
-    ) -> Generator[Dict[str, Any], None, None]:
+        row: List[Any],
+        headers: List[str],
+        row_number: int
+    ) -> Dict[str, Any]:
         """
-        Read records from a specific row range.
+        Transform a row into a record dictionary.
 
         Args:
-            start_row: First row to read (1-indexed, data row not header).
-            end_row: Last row to read (inclusive).
-
-        Yields:
-            Dictionary for each row with column headers as keys.
-        """
-        # Ensure headers are loaded
-        headers = self.headers
-
-        if not headers:
-            logger.warning(f"No headers found in sheet '{self.sheet_name}'")
-            return
-
-        data_range = build_range_notation(
-            self.sheet_name,
-            start_row=start_row,
-            end_row=end_row,
-            end_col=self.max_columns,
-        )
-
-        result = self.client.get_values(
-            self.spreadsheet_id,
-            data_range,
-            value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="FORMATTED_STRING",
-        )
-
-        rows = result.get("values", [])
-
-        for i, row in enumerate(rows):
-            row_number = start_row + i
-
-            # Skip completely empty rows
-            if not any(cell for cell in row if cell is not None and cell != ""):
-                continue
-
-            yield self._row_to_record(row, row_number)
-
-    def get_record_count(self) -> int:
-        """
-        Get an estimate of the number of records in the sheet.
-
-        Note: This fetches the first column to count rows, which is
-        more efficient than fetching all data.
+            row: List of cell values
+            headers: List of column headers
+            row_number: 1-indexed row number
 
         Returns:
-            Estimated number of data records (excluding header).
+            Dictionary record
         """
-        count = self.client.get_sheet_row_count(
-            self.spreadsheet_id,
-            self.sheet_name,
+        record = {}
+
+        # Add row number if configured
+        if self.include_row_numbers:
+            record["_row_number"] = row_number
+
+        # Add column values
+        for col_idx, header in enumerate(headers):
+            if not header:
+                continue
+
+            field_name = sanitize_column_name(header) if self.sanitize_names else header
+
+            if col_idx < len(row):
+                value = row[col_idx]
+                # Convert empty strings to None
+                record[field_name] = value if value != "" else None
+            else:
+                record[field_name] = None
+
+        return record
+
+    def get_stream_metadata(self) -> StreamMetadata:
+        """
+        Get complete metadata for this stream.
+
+        Returns:
+            StreamMetadata instance
+        """
+        return StreamMetadata(
+            name=self.name,
+            sheet_id=self.sheet_id,
+            row_count=self.row_count,
+            column_count=self.column_count,
+            schema=self.get_schema(),
+            headers=self.get_headers()
         )
-        # Subtract header row
-        return max(0, count - self.header_row)
 
 
-class MultiSheetReader:
+class SpreadsheetStreamFactory:
     """
-    Reads data from multiple sheets in a spreadsheet.
+    Factory for creating streams from a spreadsheet.
 
-    Useful for extracting all data from a spreadsheet while maintaining
-    stream context.
+    Discovers all sheets in a spreadsheet and creates
+    corresponding stream objects.
     """
 
     def __init__(
         self,
         client: GoogleSheetsClient,
-        spreadsheet_id: str,
-        sheet_names: Optional[List[str]] = None,
-        header_row: int = 1,
-        batch_size: int = 1000,
-        include_row_number: bool = True,
+        sanitize_names: bool = True,
+        include_row_numbers: bool = True,
+        batch_size: int = 200
     ):
         """
-        Initialize multi-sheet reader.
+        Initialize stream factory.
 
         Args:
-            client: Google Sheets API client.
-            spreadsheet_id: The spreadsheet ID.
-            sheet_names: List of sheets to read. If None, reads all sheets.
-            header_row: Default header row for all sheets.
-            batch_size: Default batch size for all sheets.
-            include_row_number: Include row numbers in records.
+            client: Google Sheets client
+            sanitize_names: Whether to sanitize column names
+            include_row_numbers: Whether to include row numbers
+            batch_size: Batch size for reading
         """
         self.client = client
-        self.spreadsheet_id = spreadsheet_id
-        self.sheet_names = sheet_names
-        self.header_row = header_row
+        self.sanitize_names = sanitize_names
+        self.include_row_numbers = include_row_numbers
         self.batch_size = batch_size
-        self.include_row_number = include_row_number
 
-    def _discover_sheets(self) -> List[str]:
-        """Discover all sheet names in the spreadsheet."""
-        metadata = self.client.get_spreadsheet(self.spreadsheet_id)
-        return [
-            sheet["properties"]["title"]
-            for sheet in metadata.get("sheets", [])
-        ]
-
-    def read_all(self) -> Generator[Dict[str, Any], None, None]:
+    def discover_streams(self) -> List[SheetStream]:
         """
-        Read all records from all configured sheets.
-
-        Yields:
-            Dictionary containing stream name and record data:
-            {
-                "_stream": "sheet_name",
-                ...record_data
-            }
-        """
-        sheets = self.sheet_names or self._discover_sheets()
-
-        for sheet_name in sheets:
-            logger.info(f"Reading sheet: {sheet_name}")
-
-            stream = SheetStream(
-                client=self.client,
-                spreadsheet_id=self.spreadsheet_id,
-                sheet_name=sheet_name,
-                header_row=self.header_row,
-                batch_size=self.batch_size,
-                include_row_number=self.include_row_number,
-            )
-
-            for record in stream.read():
-                yield {"_stream": sheet_name, **record}
-
-    def get_all_headers(self) -> Dict[str, List[str]]:
-        """
-        Get headers for all configured sheets.
+        Discover all sheets and create stream objects.
 
         Returns:
-            Dictionary mapping sheet names to their header lists.
+            List of SheetStream instances
         """
-        sheets = self.sheet_names or self._discover_sheets()
-        headers = {}
+        metadata = self.client.get_spreadsheet_metadata()
+        streams = []
 
-        for sheet_name in sheets:
+        for sheet in metadata.get("sheets", []):
+            props = sheet.get("properties", {})
+            sheet_name = props.get("title")
+            sheet_id = props.get("sheetId")
+
+            if sheet_name is None:
+                continue
+
             stream = SheetStream(
+                name=sheet_name,
                 client=self.client,
-                spreadsheet_id=self.spreadsheet_id,
-                sheet_name=sheet_name,
-                header_row=self.header_row,
+                sheet_id=sheet_id,
+                sanitize_names=self.sanitize_names,
+                include_row_numbers=self.include_row_numbers,
+                batch_size=self.batch_size
             )
-            headers[sheet_name] = stream.headers
 
-        return headers
+            streams.append(stream)
+
+        logger.info(f"Discovered {len(streams)} streams in spreadsheet")
+        return streams
+
+    def get_stream(self, sheet_name: str) -> Optional[SheetStream]:
+        """
+        Get a specific stream by sheet name.
+
+        Args:
+            sheet_name: Name of the sheet
+
+        Returns:
+            SheetStream instance or None if not found
+        """
+        metadata = self.client.get_spreadsheet_metadata()
+
+        for sheet in metadata.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == sheet_name:
+                return SheetStream(
+                    name=sheet_name,
+                    client=self.client,
+                    sheet_id=props.get("sheetId"),
+                    sanitize_names=self.sanitize_names,
+                    include_row_numbers=self.include_row_numbers,
+                    batch_size=self.batch_size
+                )
+
+        return None

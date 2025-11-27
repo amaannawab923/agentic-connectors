@@ -2,70 +2,56 @@
 Google Sheets Source Connector
 
 A production-ready connector for extracting data from Google Sheets.
-Supports service account and OAuth2 authentication methods.
 """
 
-from .auth import (
-    AuthenticationError,
-    GoogleSheetsAuthenticator,
-    ServiceAccountAuthenticator,
-    OAuth2Authenticator,
-)
-from .client import (
-    GoogleSheetsClient,
-    RateLimitError,
-    APIError,
-)
 from .config import (
     GoogleSheetsConfig,
     ServiceAccountCredentials,
     OAuth2Credentials,
-    StreamConfig,
+    CredentialsUnion,
 )
-from .connector import (
-    GoogleSheetsConnector,
-    ConnectionTestResult,
-)
+from .auth import GoogleSheetsAuthenticator
+from .client import GoogleSheetsClient
+from .connector import GoogleSheetsConnector
 from .streams import (
+    BaseStream,
     SheetStream,
     StreamSchema,
     StreamMetadata,
 )
 from .utils import (
-    normalize_header,
-    parse_spreadsheet_id,
-    build_range_notation,
-    infer_json_schema_type,
+    GoogleSheetsError,
+    AuthenticationError,
+    RateLimitError,
+    NotFoundError,
+    InvalidRequestError,
+    ConnectionError,
 )
 
-__version__ = "1.0.0"
-__author__ = "Connector Platform"
-
 __all__ = [
-    # Auth
-    "AuthenticationError",
-    "GoogleSheetsAuthenticator",
-    "ServiceAccountAuthenticator",
-    "OAuth2Authenticator",
-    # Client
-    "GoogleSheetsClient",
-    "RateLimitError",
-    "APIError",
     # Config
     "GoogleSheetsConfig",
     "ServiceAccountCredentials",
     "OAuth2Credentials",
-    "StreamConfig",
+    "CredentialsUnion",
+    # Auth
+    "GoogleSheetsAuthenticator",
+    # Client
+    "GoogleSheetsClient",
     # Connector
     "GoogleSheetsConnector",
-    "ConnectionTestResult",
     # Streams
+    "BaseStream",
     "SheetStream",
     "StreamSchema",
     "StreamMetadata",
-    # Utils
-    "normalize_header",
-    "parse_spreadsheet_id",
-    "build_range_notation",
-    "infer_json_schema_type",
+    # Exceptions
+    "GoogleSheetsError",
+    "AuthenticationError",
+    "RateLimitError",
+    "NotFoundError",
+    "InvalidRequestError",
+    "ConnectionError",
 ]
+
+__version__ = "1.0.0"

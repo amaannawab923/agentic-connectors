@@ -1,333 +1,334 @@
 """
-Configuration management for Google Sheets connector.
+Configuration models for Google Sheets connector.
 
-Uses Pydantic for validation and type safety.
+This module defines Pydantic models for validating connector configuration,
+including authentication credentials and connection settings.
 """
 
 from typing import Any, Dict, List, Literal, Optional, Union
-
 from pydantic import BaseModel, Field, field_validator, model_validator
+import json
+import re
 
 
 class ServiceAccountCredentials(BaseModel):
-    """Service account credentials configuration."""
+    """Service account authentication credentials."""
 
     auth_type: Literal["service_account"] = Field(
         default="service_account",
-        description="Authentication type identifier",
+        description="Authentication type identifier"
     )
 
-    type: str = Field(
-        default="service_account",
-        description="Google credential type",
-    )
-
-    project_id: str = Field(
+    service_account_info: str = Field(
         ...,
-        description="Google Cloud project ID",
+        description="Service account JSON credentials as a string"
     )
 
-    private_key_id: Optional[str] = Field(
-        default=None,
-        description="Private key ID",
-    )
-
-    private_key: str = Field(
-        ...,
-        description="Private key in PEM format",
-    )
-
-    client_email: str = Field(
-        ...,
-        description="Service account email address",
-    )
-
-    client_id: Optional[str] = Field(
-        default=None,
-        description="Client ID",
-    )
-
-    auth_uri: str = Field(
-        default="https://accounts.google.com/o/oauth2/auth",
-        description="OAuth2 authorization URI",
-    )
-
-    token_uri: str = Field(
-        default="https://oauth2.googleapis.com/token",
-        description="Token URI",
-    )
-
-    auth_provider_x509_cert_url: str = Field(
-        default="https://www.googleapis.com/oauth2/v1/certs",
-        description="Auth provider certificate URL",
-    )
-
-    client_x509_cert_url: Optional[str] = Field(
-        default=None,
-        description="Client certificate URL",
-    )
-
-    @field_validator("private_key")
+    @field_validator("service_account_info")
     @classmethod
-    def validate_private_key(cls, v: str) -> str:
-        """Ensure private key is in PEM format."""
-        if not v.strip().startswith("-----BEGIN"):
-            raise ValueError("Private key must be in PEM format")
+    def validate_service_account_info(cls, v: str) -> str:
+        """Validate that service account info is valid JSON with required fields."""
+        try:
+            data = json.loads(v)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in service_account_info: {e}")
+
+        required_fields = [
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+            "client_id",
+        ]
+
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            raise ValueError(f"Missing required fields in service account: {missing_fields}")
+
+        if data.get("type") != "service_account":
+            raise ValueError("service_account_info must have type 'service_account'")
+
         return v
 
-    def to_google_credentials_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format expected by Google libraries."""
-        return {
-            "type": "service_account",
-            "project_id": self.project_id,
-            "private_key_id": self.private_key_id,
-            "private_key": self.private_key,
-            "client_email": self.client_email,
-            "client_id": self.client_id,
-            "auth_uri": self.auth_uri,
-            "token_uri": self.token_uri,
-            "auth_provider_x509_cert_url": self.auth_provider_x509_cert_url,
-            "client_x509_cert_url": self.client_x509_cert_url,
-        }
+    def get_credentials_dict(self) -> Dict[str, Any]:
+        """Parse and return credentials as a dictionary."""
+        return json.loads(self.service_account_info)
 
 
 class OAuth2Credentials(BaseModel):
-    """OAuth2 credentials configuration."""
+    """OAuth 2.0 authentication credentials."""
 
     auth_type: Literal["oauth2"] = Field(
         default="oauth2",
-        description="Authentication type identifier",
+        description="Authentication type identifier"
     )
 
     client_id: str = Field(
         ...,
-        description="OAuth2 client ID",
+        description="OAuth2 client ID"
     )
 
     client_secret: str = Field(
         ...,
-        description="OAuth2 client secret",
+        description="OAuth2 client secret"
     )
 
     refresh_token: str = Field(
         ...,
-        description="OAuth2 refresh token",
+        description="OAuth2 refresh token"
     )
 
+    access_token: Optional[str] = Field(
+        default=None,
+        description="OAuth2 access token (optional, will be refreshed)"
+    )
 
-class StreamConfig(BaseModel):
-    """Configuration for a single sheet stream."""
+    @field_validator("client_id")
+    @classmethod
+    def validate_client_id(cls, v: str) -> str:
+        """Validate client ID format."""
+        if not v or len(v) < 10:
+            raise ValueError("Invalid client_id format")
+        return v
+
+    @field_validator("client_secret")
+    @classmethod
+    def validate_client_secret(cls, v: str) -> str:
+        """Validate client secret format."""
+        if not v or len(v) < 10:
+            raise ValueError("Invalid client_secret format")
+        return v
+
+
+class APIKeyCredentials(BaseModel):
+    """API Key authentication credentials (for public sheets only)."""
+
+    auth_type: Literal["api_key"] = Field(
+        default="api_key",
+        description="Authentication type identifier"
+    )
+
+    api_key: str = Field(
+        ...,
+        description="Google API key for accessing public spreadsheets"
+    )
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v: str) -> str:
+        """Validate API key format."""
+        if not v or len(v) < 20:
+            raise ValueError("Invalid API key format")
+        return v
+
+
+# Union type for credentials
+CredentialsUnion = Union[ServiceAccountCredentials, OAuth2Credentials, APIKeyCredentials]
+
+
+class SheetConfig(BaseModel):
+    """Configuration for a specific sheet to extract."""
 
     name: str = Field(
         ...,
-        description="Name of the sheet to read",
+        description="Name of the sheet to extract"
     )
 
-    header_row: int = Field(
+    range: Optional[str] = Field(
+        default=None,
+        description="Optional A1 notation range (e.g., 'A1:Z1000')"
+    )
+
+    headers_row: int = Field(
         default=1,
         ge=1,
-        description="Row number containing column headers (1-indexed)",
+        description="Row number containing headers (1-indexed)"
     )
 
-    batch_size: int = Field(
-        default=1000,
-        ge=1,
-        le=10000,
-        description="Number of rows to fetch per API call",
-    )
-
-    enabled: bool = Field(
-        default=True,
-        description="Whether this stream is enabled for extraction",
-    )
-
-
-class RateLimitSettings(BaseModel):
-    """Rate limiting settings."""
-
-    requests_per_minute: int = Field(
-        default=60,
-        ge=1,
-        le=300,
-        description="Maximum requests per minute (Google limit: 300/project, 60/user)",
-    )
-
-    max_retries: int = Field(
-        default=5,
+    skip_rows: int = Field(
+        default=0,
         ge=0,
-        le=10,
-        description="Maximum retry attempts on transient errors",
-    )
-
-    base_delay: float = Field(
-        default=1.0,
-        ge=0.1,
-        le=10.0,
-        description="Base delay in seconds for exponential backoff",
-    )
-
-    max_delay: float = Field(
-        default=60.0,
-        ge=1.0,
-        le=300.0,
-        description="Maximum delay in seconds between retries",
+        description="Number of rows to skip after headers"
     )
 
 
 class GoogleSheetsConfig(BaseModel):
-    """
-    Main configuration for the Google Sheets connector.
-
-    Example configuration:
-    ```python
-    config = GoogleSheetsConfig(
-        spreadsheet_id="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-        credentials=ServiceAccountCredentials(
-            project_id="my-project",
-            private_key="-----BEGIN PRIVATE KEY-----...",
-            client_email="connector@my-project.iam.gserviceaccount.com",
-        ),
-    )
-    ```
-    """
+    """Main configuration for Google Sheets connector."""
 
     spreadsheet_id: str = Field(
         ...,
-        description="The ID of the Google Spreadsheet (from the URL)",
-        pattern=r"^[a-zA-Z0-9-_]+$",
+        description="The ID of the Google Spreadsheet (from URL)"
     )
 
-    credentials: Union[ServiceAccountCredentials, OAuth2Credentials] = Field(
+    credentials: CredentialsUnion = Field(
         ...,
         discriminator="auth_type",
-        description="Authentication credentials",
+        description="Authentication credentials"
     )
 
-    streams: Optional[List[StreamConfig]] = Field(
+    batch_size: int = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="Number of rows to fetch per API call"
+    )
+
+    sheets: Optional[List[SheetConfig]] = Field(
         default=None,
-        description="Specific sheets to extract. If None, all sheets are extracted.",
+        description="Specific sheets to extract (None = all sheets)"
     )
 
-    row_batch_size: int = Field(
-        default=1000,
-        ge=1,
-        le=10000,
-        description="Default number of rows to fetch per API call",
+    value_render_option: Literal[
+        "FORMATTED_VALUE",
+        "UNFORMATTED_VALUE",
+        "FORMULA"
+    ] = Field(
+        default="UNFORMATTED_VALUE",
+        description="How to render cell values"
     )
 
-    header_row: int = Field(
-        default=1,
-        ge=1,
-        description="Default row number containing column headers (1-indexed)",
+    date_time_render_option: Literal[
+        "SERIAL_NUMBER",
+        "FORMATTED_STRING"
+    ] = Field(
+        default="FORMATTED_STRING",
+        description="How to render date/time values"
     )
 
-    rate_limit: RateLimitSettings = Field(
-        default_factory=RateLimitSettings,
-        description="Rate limiting settings",
-    )
-
-    include_row_number: bool = Field(
+    include_row_numbers: bool = Field(
         default=True,
-        description="Include a '_row_number' field in output records",
+        description="Include _row_number field in output"
+    )
+
+    sanitize_column_names: bool = Field(
+        default=True,
+        description="Sanitize column names for JSON compatibility"
+    )
+
+    max_retries: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum number of retry attempts"
+    )
+
+    retry_delay: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=60.0,
+        description="Base delay between retries in seconds"
+    )
+
+    request_timeout: int = Field(
+        default=180,
+        ge=10,
+        le=600,
+        description="Request timeout in seconds"
     )
 
     @field_validator("spreadsheet_id")
     @classmethod
     def validate_spreadsheet_id(cls, v: str) -> str:
-        """Validate spreadsheet ID format."""
-        if len(v) < 10:
-            raise ValueError("Spreadsheet ID appears too short")
+        """Validate and extract spreadsheet ID."""
+        # If it looks like a URL, extract the ID
+        if "docs.google.com" in v or "spreadsheets" in v:
+            patterns = [
+                r'/spreadsheets/d/([a-zA-Z0-9-_]+)',
+                r'key=([a-zA-Z0-9-_]+)',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, v)
+                if match:
+                    return match.group(1)
+            raise ValueError(f"Could not extract spreadsheet ID from URL: {v}")
+
+        # Validate as a raw ID
+        if not re.match(r'^[a-zA-Z0-9-_]+$', v):
+            raise ValueError(f"Invalid spreadsheet ID format: {v}")
+
         return v
 
     @model_validator(mode="after")
     def validate_config(self) -> "GoogleSheetsConfig":
         """Validate the complete configuration."""
-        # Ensure rate limit max_delay is greater than base_delay
-        if self.rate_limit.max_delay < self.rate_limit.base_delay:
-            raise ValueError("max_delay must be greater than or equal to base_delay")
+        # Additional cross-field validation can be added here
         return self
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GoogleSheetsConfig":
-        """
-        Create configuration from a dictionary.
-
-        Handles various input formats for flexibility.
-        """
-        # Handle nested credentials format
-        if "credentials" in data and isinstance(data["credentials"], dict):
-            creds = data["credentials"]
-            # Determine auth type if not specified
-            if "auth_type" not in creds:
-                if "private_key" in creds:
-                    creds["auth_type"] = "service_account"
-                elif "refresh_token" in creds:
-                    creds["auth_type"] = "oauth2"
-
-        return cls(**data)
-
-    def get_auth_dict(self) -> Dict[str, Any]:
-        """Get credentials as dictionary for authentication."""
-        if isinstance(self.credentials, ServiceAccountCredentials):
-            return self.credentials.to_google_credentials_dict()
-        else:
-            return {
-                "auth_type": "oauth2",
-                "client_id": self.credentials.client_id,
-                "client_secret": self.credentials.client_secret,
-                "refresh_token": self.credentials.refresh_token,
+    class Config:
+        """Pydantic configuration."""
+        extra = "forbid"  # Disallow extra fields
+        json_schema_extra = {
+            "example": {
+                "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+                "credentials": {
+                    "auth_type": "service_account",
+                    "service_account_info": "{...}"
+                },
+                "batch_size": 200,
+                "value_render_option": "UNFORMATTED_VALUE"
             }
+        }
 
 
-class CatalogEntry(BaseModel):
-    """Entry in the connector catalog describing a stream."""
+class ConnectionStatus(BaseModel):
+    """Status of a connection check."""
+
+    connected: bool = Field(
+        ...,
+        description="Whether the connection was successful"
+    )
+
+    message: str = Field(
+        ...,
+        description="Status message"
+    )
+
+    spreadsheet_title: Optional[str] = Field(
+        default=None,
+        description="Title of the spreadsheet if connected"
+    )
+
+    sheet_count: Optional[int] = Field(
+        default=None,
+        description="Number of sheets if connected"
+    )
+
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if connection failed"
+    )
+
+
+class SyncResult(BaseModel):
+    """Result of a sync operation."""
 
     stream_name: str = Field(
         ...,
-        description="Name of the stream (sheet name)",
+        description="Name of the synced stream"
     )
 
-    schema: Dict[str, Any] = Field(
+    records_count: int = Field(
         ...,
-        description="JSON Schema for the stream",
+        description="Number of records synced"
     )
 
-    supported_sync_modes: List[str] = Field(
-        default_factory=lambda: ["full_refresh"],
-        description="Supported synchronization modes",
+    success: bool = Field(
+        ...,
+        description="Whether the sync was successful"
     )
 
-    source_defined_cursor: bool = Field(
-        default=False,
-        description="Whether the source defines a cursor field",
-    )
-
-    default_cursor_field: Optional[List[str]] = Field(
+    error: Optional[str] = Field(
         default=None,
-        description="Default cursor field path",
+        description="Error message if sync failed"
     )
 
-    source_defined_primary_key: Optional[List[List[str]]] = Field(
-        default=None,
-        description="Primary key defined by the source",
+    started_at: str = Field(
+        ...,
+        description="ISO timestamp when sync started"
     )
 
-
-class Catalog(BaseModel):
-    """Catalog of available streams in the connector."""
-
-    streams: List[CatalogEntry] = Field(
-        default_factory=list,
-        description="List of available streams",
+    completed_at: str = Field(
+        ...,
+        description="ISO timestamp when sync completed"
     )
-
-    def get_stream(self, stream_name: str) -> Optional[CatalogEntry]:
-        """Get a specific stream by name."""
-        for stream in self.streams:
-            if stream.stream_name == stream_name:
-                return stream
-        return None
-
-    def get_stream_names(self) -> List[str]:
-        """Get list of all stream names."""
-        return [stream.stream_name for stream in self.streams]

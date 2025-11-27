@@ -23,8 +23,10 @@ from ..state import (
 # Import the actual agents
 from ...agents.research import ResearchAgent
 from ...agents.generator import GeneratorAgent
+from ...agents.mock_generator import MockGeneratorAgent
 from ...agents.tester import TesterAgent, TesterMode
 from ...agents.test_reviewer import TestReviewerAgent
+from ...agents.publisher_new import PublisherAgentNew
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +365,178 @@ async def generator_node(state: PipelineState) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mock Generator Node (Real Agent)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Singleton agent instance (reuse for efficiency)
+_mock_generator_agent = None
+
+
+def _get_mock_generator_agent() -> MockGeneratorAgent:
+    """Get or create the mock generator agent singleton."""
+    global _mock_generator_agent
+    if _mock_generator_agent is None:
+        _mock_generator_agent = MockGeneratorAgent()
+    return _mock_generator_agent
+
+
+async def mock_generator_node(state: PipelineState) -> Dict[str, Any]:
+    """Real mock generator agent - uses Claude Agent SDK for fixture generation.
+
+    Calls MockGeneratorAgent.execute() which:
+    - Reads IMPLEMENTATION.md from Generator output
+    - Analyzes test files to understand fixture requirements
+    - Researches mock library requirements (universe_domain, etc.)
+    - Generates comprehensive fixtures and conftest.py
+    - Does NOT run tests (that's Tester's job)
+
+    Only runs on first generation when fixtures don't exist.
+    On retry loops (VALID+FAIL → Generator → Tester), this node is SKIPPED.
+
+    Returns state updates with:
+    - mock_generation_output: Dict with fixture metadata
+    - fixtures_created: List of fixture file paths
+    - mock_generation_skipped: True if skipped (fixtures already exist)
+    - current_phase: "mock_generating"
+    - logs: New log entries
+    """
+    connector_name = state["connector_name"]
+    connector_type = state.get("connector_type", "source")
+    connector_dir = state.get("connector_dir", "")
+    generated_code = state.get("generated_code", {})
+    research_output = state.get("research_output", {})
+
+    # Collect NEW logs only (reducer will merge with existing)
+    new_logs: List[str] = []
+
+    # Validate connector directory
+    if not connector_dir:
+        # Build it from connector name if not provided
+        connector_slug = connector_name.lower().replace(" ", "-").replace("_", "-")
+        connector_dir = str(OUTPUT_BASE_DIR / f"{connector_type}-{connector_slug}")
+        new_logs.append(f"[MOCK_GENERATOR] Built connector_dir from name: {connector_dir}")
+
+    connector_path = Path(connector_dir)
+    if not connector_path.exists():
+        new_logs.append(_log(f"[MOCK_GENERATOR] ERROR: Connector directory not found: {connector_dir}"))
+        return {
+            "current_phase": PipelinePhase.MOCK_GENERATING.value,
+            "mock_generation_skipped": True,
+            "errors": [f"MockGenerator failed: Connector directory not found"],
+            "logs": new_logs,
+        }
+
+    # Check if fixtures already exist (fast-path skip)
+    fixtures_dir = connector_path / "tests" / "fixtures"
+    conftest_path = connector_path / "tests" / "conftest.py"
+
+    if fixtures_dir.exists() and conftest_path.exists():
+        new_logs.append(_log(f"[MOCK_GENERATOR] Fixtures already exist, skipping generation"))
+        new_logs.append(f"[MOCK_GENERATOR] Found fixtures at: {fixtures_dir}")
+        new_logs.append(f"[MOCK_GENERATOR] Found conftest at: {conftest_path}")
+
+        return {
+            "current_phase": PipelinePhase.MOCK_GENERATING.value,
+            "mock_generation_skipped": True,
+            "logs": new_logs,
+        }
+
+    # Fixtures don't exist - run MockGenerator
+    new_logs.append(_log(f"[MOCK_GENERATOR] Generating fixtures and conftest.py for {connector_name}..."))
+    new_logs.append(f"[MOCK_GENERATOR] Working directory: {connector_dir}")
+
+    # Extract IMPLEMENTATION.md summary from generated_code (if available)
+    implementation_summary = None
+    if generated_code and "implementation_summary" in generated_code:
+        implementation_summary = generated_code["implementation_summary"]
+        new_logs.append(f"[MOCK_GENERATOR] Using IMPLEMENTATION summary from Generator")
+    elif (connector_path / "IMPLEMENTATION.md").exists():
+        # Fallback: read from file
+        implementation_summary = (connector_path / "IMPLEMENTATION.md").read_text()
+        new_logs.append(f"[MOCK_GENERATOR] Read IMPLEMENTATION.md from file")
+
+    # Extract research summary
+    research_summary = None
+    if research_output:
+        research_summary = research_output.get("full_document", "")
+        new_logs.append(f"[MOCK_GENERATOR] Using research output ({len(research_summary)} chars)")
+
+    # Extract client methods from generated code
+    client_methods = None
+    if generated_code and "client_methods" in generated_code:
+        client_methods = generated_code["client_methods"]
+        new_logs.append(f"[MOCK_GENERATOR] Found {len(client_methods)} client methods from Generator")
+
+    try:
+        # Get the mock generator agent
+        agent = _get_mock_generator_agent()
+
+        # Execute the mock generator agent
+        new_logs.append(_log(f"[MOCK_GENERATOR] Calling Claude Agent SDK (max 35 turns)..."))
+
+        result = await agent.execute(
+            connector_name=connector_name,
+            connector_type=connector_type,
+            research_summary=research_summary,
+            client_methods=client_methods,
+        )
+
+        if not result.success:
+            new_logs.append(_log(f"[MOCK_GENERATOR] FAILED: {result.error}"))
+            return {
+                "current_phase": PipelinePhase.MOCK_GENERATING.value,
+                "mock_generation_skipped": False,
+                "errors": [f"MockGenerator failed: {result.error}"],
+                "logs": new_logs,
+            }
+
+        # Parse the mock generation output
+        try:
+            output_data = json.loads(result.output) if isinstance(result.output, str) else result.output
+        except (json.JSONDecodeError, TypeError):
+            output_data = {"raw_output": result.output}
+
+        # Extract fixture information
+        fixtures_created_list = []
+        if fixtures_dir.exists():
+            fixtures_created_list = [str(f.relative_to(connector_path)) for f in fixtures_dir.rglob("*.json")]
+
+        fixture_count = output_data.get("fixture_count", len(fixtures_created_list))
+
+        new_logs.append(_log(f"[MOCK_GENERATOR] Completed! Created {fixture_count} fixtures"))
+        new_logs.append(f"[MOCK_GENERATOR] Fixtures directory: {fixtures_dir}")
+        new_logs.append(f"[MOCK_GENERATOR] conftest.py: {conftest_path}")
+
+        # Structure the mock generation output
+        mock_output = {
+            "fixtures_dir": str(fixtures_dir),
+            "conftest_path": str(conftest_path),
+            "fixture_count": fixture_count,
+            "duration_seconds": result.duration_seconds,
+            "tokens_used": result.tokens_used,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+        return {
+            "mock_generation_output": mock_output,
+            "fixtures_created": fixtures_created_list,
+            "mock_generation_skipped": False,
+            "current_phase": PipelinePhase.MOCK_GENERATING.value,
+            "logs": new_logs,
+        }
+
+    except Exception as e:
+        logger.exception(f"MockGenerator agent exception: {e}")
+        new_logs.append(_log(f"[MOCK_GENERATOR] EXCEPTION: {str(e)}"))
+        return {
+            "current_phase": PipelinePhase.MOCK_GENERATING.value,
+            "mock_generation_skipped": False,
+            "errors": [f"MockGenerator exception: {str(e)}"],
+            "logs": new_logs,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Tester Node (Real Agent)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -402,6 +576,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
     connector_type = state.get("connector_type", "source")
     connector_dir = state.get("connector_dir", "")
     generated_code = state.get("generated_code", {})
+    mock_generation_output = state.get("mock_generation_output", {})
     test_retries = state.get("test_retries", 0)
     gen_fix_retries = state.get("gen_fix_retries", 0)
     test_review_decision = state.get("test_review_decision", "")
@@ -439,6 +614,17 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
         mode = TesterMode.GENERATE
         new_logs.append(_log(f"[TESTER] GENERATE MODE - Creating tests for {connector_name}..."))
 
+    # Log fixture information if MockGenerator ran
+    if mock_generation_output:
+        fixture_count = mock_generation_output.get("fixture_count", 0)
+        fixtures_dir = mock_generation_output.get("fixtures_dir", "N/A")
+        conftest_path = mock_generation_output.get("conftest_path", "N/A")
+        new_logs.append(f"[TESTER] MockGenerator created {fixture_count} fixtures")
+        new_logs.append(f"[TESTER] Fixtures directory: {fixtures_dir}")
+        new_logs.append(f"[TESTER] conftest.py: {conftest_path}")
+    else:
+        new_logs.append(f"[TESTER] No mock generation output (MockGenerator was skipped or not run)")
+
     # Validate connector directory
     if not connector_dir:
         # Build it from connector name if not provided
@@ -451,7 +637,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
         new_logs.append(_log(f"[TESTER] ERROR: Connector directory not found: {connector_dir}"))
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "error",
                 "passed": False,
                 "errors": [f"Connector directory not found: {connector_dir}"],
@@ -524,7 +710,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
 
             return {
                 "current_phase": PipelinePhase.TESTING.value,
-                "test_output": {
+                "test_results": {
                     "status": "failed",
                     "passed": False,
                     "errors": errors,
@@ -552,7 +738,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
 
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "passed",
                 "passed": True,
                 "tests_passed": tests_passed,
@@ -570,7 +756,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
         new_logs.append(_log(f"[TESTER] EXCEPTION: {str(e)}"))
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "error",
                 "passed": False,
                 "errors": [f"Tester exception: {str(e)}"],
@@ -621,7 +807,7 @@ async def test_reviewer_node(state: PipelineState) -> Dict[str, Any]:
     connector_name = state["connector_name"]
     connector_dir = state.get("connector_dir", "")
     connector_type = state.get("connector_type", "source")
-    test_output = state.get("test_output", {})
+    test_output = state.get("test_results", {})
     generated_code = state.get("generated_code", {})
     test_retries = state.get("test_retries", 0)
     gen_fix_retries = state.get("gen_fix_retries", 0)
@@ -731,5 +917,150 @@ async def test_reviewer_node(state: PipelineState) -> Dict[str, Any]:
             "test_review_feedback": [f"Test review failed: {str(e)}"],
             "gen_fix_retries": gen_fix_retries + 1,
             "errors": [f"Test reviewer exception: {str(e)}"],
+            "logs": new_logs,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Publisher Node (Real Agent)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Singleton agent instance
+_publisher_agent = None
+
+
+def _get_publisher_agent() -> PublisherAgentNew:
+    """Get or create the publisher agent singleton."""
+    global _publisher_agent
+    if _publisher_agent is None:
+        _publisher_agent = PublisherAgentNew()
+    return _publisher_agent
+
+
+async def publisher_node(state: PipelineState) -> Dict[str, Any]:
+    """Real publisher agent - publishes connector to GitHub repository.
+
+    Calls PublisherAgentNew.execute() which:
+    - Initializes Git repository
+    - Configures remote with authentication token
+    - Creates/checks out branch
+    - Stages and commits all files
+    - Pushes to GitHub
+    - Optionally creates PR
+
+    Returns state updates with:
+    - publish_output: Dict containing commit hash, branch name, repository URL
+    - current_phase: "publishing"
+    - logs: New log entries
+    """
+    connector_name = state["connector_name"]
+    connector_dir = state.get("connector_dir", "")
+    generated_code = state.get("generated_code", {})
+
+    # Collect NEW logs only (reducer will merge with existing)
+    new_logs: List[str] = []
+    new_logs.append(_log(f"[PUBLISHER] Publishing {connector_name} to GitHub..."))
+
+    # Get GitHub configuration from environment or config
+    from ...config import get_settings
+    settings = get_settings()
+
+    repo_owner = settings.github_repo_owner
+    repo_name = settings.github_repo_name
+    personal_access_token = settings.github_token.get_secret_value() if settings.github_token else None
+
+    if not repo_owner or not repo_name:
+        error_msg = "GitHub repository owner and name must be configured (GITHUB_REPO_OWNER, GITHUB_REPO_NAME)"
+        new_logs.append(_log(f"[PUBLISHER] ERROR: {error_msg}"))
+        return {
+            "current_phase": PipelinePhase.PUBLISHING.value,
+            "errors": [error_msg],
+            "logs": new_logs,
+        }
+
+    if not personal_access_token:
+        error_msg = "GitHub personal access token must be configured (GITHUB_TOKEN)"
+        new_logs.append(_log(f"[PUBLISHER] ERROR: {error_msg}"))
+        return {
+            "current_phase": PipelinePhase.PUBLISHING.value,
+            "errors": [error_msg],
+            "logs": new_logs,
+        }
+
+    new_logs.append(_log(f"[PUBLISHER] Target: {repo_owner}/{repo_name}"))
+
+    try:
+        # Get the publisher agent
+        agent = _get_publisher_agent()
+
+        # Collect generated files for publishing
+        from ...models.schemas import GeneratedFile
+        generated_files = []
+
+        for file_path, content in generated_code.items():
+            generated_files.append(GeneratedFile(
+                path=file_path,
+                content=content
+            ))
+
+        new_logs.append(_log(f"[PUBLISHER] Publishing {len(generated_files)} files"))
+
+        # Execute the publisher agent
+        result = await agent.execute(
+            generated_files=generated_files,
+            connector_name=connector_name,
+            output_dir=connector_dir,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            personal_access_token=personal_access_token,
+            branch_name=None,  # Auto-generate: connector/<name>
+            create_pr=False,  # Just push, don't create PR
+        )
+
+        if not result.success:
+            new_logs.append(_log(f"[PUBLISHER] FAILED: {result.error}"))
+            return {
+                "current_phase": PipelinePhase.PUBLISHING.value,
+                "errors": [f"Publishing failed: {result.error}"],
+                "logs": new_logs,
+            }
+
+        # Parse the publish output
+        publish_data = json.loads(result.output) if result.output else {}
+
+        branch_name = publish_data.get("branch_name", "unknown")
+        commit_hash = publish_data.get("commit_hash", "")
+        remote_url = publish_data.get("remote_url", "")
+
+        new_logs.append(_log(f"[PUBLISHER] SUCCESS! Pushed to branch: {branch_name}"))
+        if commit_hash:
+            new_logs.append(_log(f"[PUBLISHER] Commit: {commit_hash[:8]}"))
+        if remote_url:
+            new_logs.append(_log(f"[PUBLISHER] View: {remote_url}/tree/{branch_name}"))
+
+        # Structure the publish output
+        publish_output = {
+            "branch_name": branch_name,
+            "commit_hash": commit_hash,
+            "remote_url": remote_url,
+            "repository": f"{repo_owner}/{repo_name}",
+            "published_at": datetime.utcnow().isoformat(),
+            "duration_seconds": result.duration_seconds,
+            "files_published": len(generated_files),
+        }
+
+        return {
+            "publish_output": publish_output,
+            "current_phase": PipelinePhase.PUBLISHING.value,
+            "logs": new_logs,
+        }
+
+    except Exception as e:
+        logger.exception(f"Publisher agent exception: {e}")
+        new_logs.append(_log(f"[PUBLISHER] EXCEPTION: {str(e)}"))
+
+        return {
+            "current_phase": PipelinePhase.PUBLISHING.value,
+            "errors": [f"Publisher exception: {str(e)}"],
             "logs": new_logs,
         }

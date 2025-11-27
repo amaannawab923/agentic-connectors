@@ -1,492 +1,550 @@
 """
-Main Google Sheets connector implementation.
+Main Google Sheets connector class.
 
-Provides the core connector functionality:
-- Connection testing
-- Schema discovery
-- Data extraction
+This module provides the main connector interface with standard
+check, discover, and read operations.
 """
 
-import logging
+from typing import Any, Dict, Iterator, List, Optional, Union
 from dataclasses import dataclass
-from typing import Any, Dict, Generator, List, Optional
+import logging
+import json
+from datetime import datetime
 
-from .auth import (
-    GoogleSheetsAuthenticator,
-    ServiceAccountAuthenticator,
-    OAuth2Authenticator,
-    AuthenticationError,
-)
-from .client import (
-    GoogleSheetsClient,
-    RateLimitConfig,
-    APIError,
-    NotFoundError,
-    PermissionDeniedError,
-)
 from .config import (
     GoogleSheetsConfig,
-    ServiceAccountCredentials,
-    OAuth2Credentials,
-    Catalog,
-    CatalogEntry,
-    StreamConfig,
+    ConnectionStatus,
+    SyncResult,
+    SheetConfig,
 )
-from .streams import SheetStream, StreamMetadata
-from .utils import normalize_header, infer_schema_from_values
+from .client import GoogleSheetsClient
+from .streams import (
+    SheetStream,
+    SpreadsheetStreamFactory,
+    StreamMetadata,
+)
+from .utils import (
+    GoogleSheetsError,
+    get_timestamp,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ConnectionTestResult:
-    """Result of a connection test."""
+class CatalogEntry:
+    """Represents a stream entry in the catalog."""
 
-    success: bool
-    message: str
-    spreadsheet_title: Optional[str] = None
-    sheet_count: Optional[int] = None
-    error: Optional[Exception] = None
+    stream_name: str
+    stream_schema: Dict[str, Any]
+    metadata: Dict[str, Any]
+    supported_sync_modes: List[str]
+    default_cursor_field: Optional[List[str]] = None
+    source_defined_primary_key: Optional[List[List[str]]] = None
 
-    def __str__(self) -> str:
-        if self.success:
-            return f"Connection successful: {self.spreadsheet_title} ({self.sheet_count} sheets)"
-        return f"Connection failed: {self.message}"
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "stream": {
+                "name": self.stream_name,
+                "json_schema": self.stream_schema,
+                "supported_sync_modes": self.supported_sync_modes,
+                "source_defined_primary_key": self.source_defined_primary_key,
+                "default_cursor_field": self.default_cursor_field,
+            },
+            "metadata": self.metadata
+        }
+
+
+@dataclass
+class Catalog:
+    """Represents the full catalog of streams."""
+
+    streams: List[CatalogEntry]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "streams": [entry.to_dict() for entry in self.streams]
+        }
+
+    def get_stream(self, name: str) -> Optional[CatalogEntry]:
+        """Get a stream entry by name."""
+        for entry in self.streams:
+            if entry.stream_name == name:
+                return entry
+        return None
+
+
+@dataclass
+class Record:
+    """Represents a single data record."""
+
+    stream: str
+    data: Dict[str, Any]
+    emitted_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "type": "RECORD",
+            "stream": self.stream,
+            "data": self.data,
+            "emitted_at": self.emitted_at
+        }
+
+    def to_json(self) -> str:
+        """Convert to JSON string."""
+        return json.dumps(self.to_dict())
+
+
+@dataclass
+class StateMessage:
+    """Represents a state message."""
+
+    data: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "type": "STATE",
+            "data": self.data
+        }
+
+    def to_json(self) -> str:
+        """Convert to JSON string."""
+        return json.dumps(self.to_dict())
 
 
 class GoogleSheetsConnector:
     """
-    Google Sheets source connector.
+    Google Sheets Source Connector.
 
-    Extracts data from Google Sheets spreadsheets with support for:
-    - Multiple sheets per spreadsheet
-    - Automatic schema inference
-    - Configurable batch sizes for large sheets
-    - Rate limiting and retry logic
+    This connector provides methods to:
+    - Check connection to a Google Spreadsheet
+    - Discover available sheets and their schemas
+    - Read data from sheets
 
     Example usage:
-    ```python
-    config = GoogleSheetsConfig(
-        spreadsheet_id="your-spreadsheet-id",
-        credentials=ServiceAccountCredentials(
-            project_id="your-project",
-            private_key="...",
-            client_email="...",
-        ),
-    )
+        config = GoogleSheetsConfig(
+            spreadsheet_id="your-spreadsheet-id",
+            credentials=ServiceAccountCredentials(
+                service_account_info='{"type": "service_account", ...}'
+            )
+        )
 
-    connector = GoogleSheetsConnector(config)
+        connector = GoogleSheetsConnector(config)
 
-    # Test connection
-    result = connector.check_connection()
-    if result.success:
-        # Discover available streams
-        catalog = connector.discover()
+        # Check connection
+        status = connector.check()
+        if status.connected:
+            # Discover streams
+            catalog = connector.discover()
 
-        # Read data from a specific sheet
-        for record in connector.read("Sheet1"):
-            print(record)
-    ```
+            # Read data
+            for record in connector.read():
+                print(record.to_json())
     """
 
-    def __init__(self, config: GoogleSheetsConfig):
+    def __init__(self, config: Union[GoogleSheetsConfig, Dict[str, Any]]):
         """
-        Initialize the connector with configuration.
+        Initialize the connector.
 
         Args:
-            config: Connector configuration including credentials and settings.
+            config: Configuration as GoogleSheetsConfig or dictionary
         """
-        self.config = config
-        self._authenticator: Optional[GoogleSheetsAuthenticator] = None
-        self._client: Optional[GoogleSheetsClient] = None
-        self._spreadsheet_metadata: Optional[Dict[str, Any]] = None
-
-    def _create_authenticator(self) -> GoogleSheetsAuthenticator:
-        """Create the appropriate authenticator based on credentials type."""
-        if isinstance(self.config.credentials, ServiceAccountCredentials):
-            return ServiceAccountAuthenticator(
-                credentials_info=self.config.credentials.to_google_credentials_dict()
-            )
-        elif isinstance(self.config.credentials, OAuth2Credentials):
-            return OAuth2Authenticator(
-                client_id=self.config.credentials.client_id,
-                client_secret=self.config.credentials.client_secret,
-                refresh_token=self.config.credentials.refresh_token,
-            )
+        if isinstance(config, dict):
+            self.config = GoogleSheetsConfig(**config)
         else:
-            raise AuthenticationError(
-                f"Unknown credentials type: {type(self.config.credentials)}"
-            )
+            self.config = config
 
-    @property
-    def authenticator(self) -> GoogleSheetsAuthenticator:
-        """Get or create the authenticator."""
-        if self._authenticator is None:
-            self._authenticator = self._create_authenticator()
-        return self._authenticator
+        self.client = GoogleSheetsClient(self.config)
+        self.stream_factory = SpreadsheetStreamFactory(
+            client=self.client,
+            sanitize_names=self.config.sanitize_column_names,
+            include_row_numbers=self.config.include_row_numbers,
+            batch_size=self.config.batch_size
+        )
 
-    @property
-    def client(self) -> GoogleSheetsClient:
-        """Get or create the API client."""
-        if self._client is None:
-            rate_config = RateLimitConfig(
-                requests_per_minute=self.config.rate_limit.requests_per_minute,
-                max_retries=self.config.rate_limit.max_retries,
-                base_delay=self.config.rate_limit.base_delay,
-                max_delay=self.config.rate_limit.max_delay,
-            )
-            self._client = GoogleSheetsClient(
-                authenticator=self.authenticator,
-                rate_limit_config=rate_config,
-            )
-        return self._client
+        self._streams: Optional[List[SheetStream]] = None
+        self._catalog: Optional[Catalog] = None
 
-    def check_connection(self) -> ConnectionTestResult:
+    def check(self) -> ConnectionStatus:
         """
-        Test the connection to the Google Sheets API.
-
-        Verifies:
-        - Authentication credentials are valid
-        - The specified spreadsheet exists and is accessible
+        Check connection to the spreadsheet.
 
         Returns:
-            ConnectionTestResult with success status and details.
+            ConnectionStatus with connection details
+
+        Example:
+            status = connector.check()
+            if status.connected:
+                print(f"Connected to: {status.spreadsheet_title}")
+            else:
+                print(f"Error: {status.error}")
         """
+        logger.info(f"Checking connection to spreadsheet: {self.config.spreadsheet_id}")
+
         try:
-            # Attempt to get spreadsheet metadata
-            metadata = self.client.get_spreadsheet(self.config.spreadsheet_id)
-            self._spreadsheet_metadata = metadata
+            success, message, metadata = self.client.check_connection()
 
-            title = metadata.get("properties", {}).get("title", "Unknown")
-            sheet_count = len(metadata.get("sheets", []))
+            if success and metadata:
+                return ConnectionStatus(
+                    connected=True,
+                    message=message,
+                    spreadsheet_title=metadata.get("title"),
+                    sheet_count=metadata.get("sheet_count"),
+                    error=None
+                )
+            else:
+                return ConnectionStatus(
+                    connected=False,
+                    message=message,
+                    error=message
+                )
 
-            logger.info(f"Connection successful: '{title}' with {sheet_count} sheets")
-
-            return ConnectionTestResult(
-                success=True,
-                message="Connection successful",
-                spreadsheet_title=title,
-                sheet_count=sheet_count,
+        except GoogleSheetsError as e:
+            logger.error(f"Connection check failed: {e}")
+            return ConnectionStatus(
+                connected=False,
+                message=str(e),
+                error=str(e)
             )
-
-        except AuthenticationError as e:
-            logger.error(f"Authentication failed: {e}")
-            return ConnectionTestResult(
-                success=False,
-                message=f"Authentication failed: {e.message}",
-                error=e,
-            )
-
-        except PermissionDeniedError as e:
-            logger.error(f"Permission denied: {e}")
-            return ConnectionTestResult(
-                success=False,
-                message=(
-                    "Permission denied. Please ensure the spreadsheet is shared with "
-                    f"the service account email or that OAuth permissions are granted."
-                ),
-                error=e,
-            )
-
-        except NotFoundError as e:
-            logger.error(f"Spreadsheet not found: {e}")
-            return ConnectionTestResult(
-                success=False,
-                message=f"Spreadsheet not found. Please check the spreadsheet ID.",
-                error=e,
-            )
-
-        except APIError as e:
-            logger.error(f"API error: {e}")
-            return ConnectionTestResult(
-                success=False,
-                message=f"API error: {e.message}",
-                error=e,
-            )
-
         except Exception as e:
-            logger.exception("Unexpected error during connection test")
-            return ConnectionTestResult(
-                success=False,
-                message=f"Unexpected error: {str(e)}",
-                error=e,
+            logger.error(f"Unexpected error during connection check: {e}")
+            return ConnectionStatus(
+                connected=False,
+                message=f"Unexpected error: {e}",
+                error=str(e)
             )
-
-    def _get_spreadsheet_metadata(self) -> Dict[str, Any]:
-        """Get spreadsheet metadata, caching the result."""
-        if self._spreadsheet_metadata is None:
-            self._spreadsheet_metadata = self.client.get_spreadsheet(
-                self.config.spreadsheet_id
-            )
-        return self._spreadsheet_metadata
-
-    def _get_sheet_info(self) -> List[Dict[str, Any]]:
-        """Get information about all sheets in the spreadsheet."""
-        metadata = self._get_spreadsheet_metadata()
-        sheets = []
-
-        for sheet in metadata.get("sheets", []):
-            props = sheet.get("properties", {})
-            grid_props = props.get("gridProperties", {})
-            sheets.append({
-                "sheet_id": props.get("sheetId"),
-                "title": props.get("title"),
-                "index": props.get("index"),
-                "row_count": grid_props.get("rowCount", 0),
-                "column_count": grid_props.get("columnCount", 0),
-                "frozen_row_count": grid_props.get("frozenRowCount", 0),
-                "frozen_column_count": grid_props.get("frozenColumnCount", 0),
-            })
-
-        return sheets
-
-    def _infer_stream_schema(
-        self,
-        sheet_name: str,
-        header_row: int = 1,
-        sample_rows: int = 100,
-    ) -> Dict[str, Any]:
-        """
-        Infer JSON schema for a sheet by sampling data.
-
-        Args:
-            sheet_name: Name of the sheet.
-            header_row: Row number containing headers (1-indexed).
-            sample_rows: Number of rows to sample for type inference.
-
-        Returns:
-            JSON Schema dictionary.
-        """
-        # Get headers
-        header_range = f"'{sheet_name}'!{header_row}:{header_row}"
-        header_result = self.client.get_values(
-            self.config.spreadsheet_id,
-            header_range,
-            value_render_option="FORMATTED_VALUE",
-        )
-
-        raw_headers = header_result.get("values", [[]])[0] if header_result.get("values") else []
-
-        if not raw_headers:
-            return {
-                "type": "object",
-                "properties": {},
-            }
-
-        # Normalize headers
-        headers = normalize_header(raw_headers)
-
-        # Get sample data for type inference
-        data_start = header_row + 1
-        data_end = data_start + sample_rows - 1
-        data_range = f"'{sheet_name}'!A{data_start}:ZZ{data_end}"
-
-        data_result = self.client.get_values(
-            self.config.spreadsheet_id,
-            data_range,
-            value_render_option="UNFORMATTED_VALUE",
-        )
-
-        sample_values = data_result.get("values", [])
-
-        # Infer schema from sampled values
-        return infer_schema_from_values(headers, sample_values)
 
     def discover(self) -> Catalog:
         """
         Discover available streams (sheets) and their schemas.
 
         Returns:
-            Catalog containing all discoverable streams with their schemas.
+            Catalog containing all available streams
+
+        Example:
+            catalog = connector.discover()
+            for entry in catalog.streams:
+                print(f"Stream: {entry.stream_name}")
+                print(f"Schema: {entry.stream_schema}")
         """
-        sheets_info = self._get_sheet_info()
+        logger.info("Discovering streams...")
+
+        if self._catalog is not None:
+            return self._catalog
+
+        # Get all streams
+        streams = self._get_streams()
+
         catalog_entries = []
 
-        for sheet_info in sheets_info:
-            sheet_name = sheet_info["title"]
-
-            # Check if this sheet is in the configured streams
-            stream_config = self._get_stream_config(sheet_name)
-            if stream_config and not stream_config.enabled:
-                continue
-
-            header_row = (
-                stream_config.header_row if stream_config
-                else self.config.header_row
-            )
-
+        for stream in streams:
             try:
-                schema = self._infer_stream_schema(
-                    sheet_name,
-                    header_row=header_row,
-                )
+                schema = stream.get_schema()
+                metadata = stream.get_stream_metadata()
 
                 entry = CatalogEntry(
-                    stream_name=sheet_name,
-                    schema=schema,
+                    stream_name=stream.name,
+                    stream_schema=schema.to_dict(),
+                    metadata={
+                        "sheet_id": stream.sheet_id,
+                        "row_count": metadata.row_count,
+                        "column_count": metadata.column_count,
+                        "headers": metadata.headers,
+                    },
                     supported_sync_modes=["full_refresh"],
-                    source_defined_cursor=False,
+                    source_defined_primary_key=[stream.primary_key] if stream.primary_key else None
                 )
+
                 catalog_entries.append(entry)
+                logger.debug(f"Discovered stream: {stream.name}")
 
-                logger.info(
-                    f"Discovered stream '{sheet_name}' with "
-                    f"{len(schema.get('properties', {}))} columns"
-                )
-
-            except APIError as e:
-                logger.warning(f"Failed to discover schema for sheet '{sheet_name}': {e}")
+            except GoogleSheetsError as e:
+                logger.warning(f"Failed to discover stream '{stream.name}': {e}")
                 continue
 
-        return Catalog(streams=catalog_entries)
+        self._catalog = Catalog(streams=catalog_entries)
+        logger.info(f"Discovered {len(catalog_entries)} streams")
 
-    def _get_stream_config(self, stream_name: str) -> Optional[StreamConfig]:
-        """Get stream-specific configuration if defined."""
-        if self.config.streams:
-            for stream in self.config.streams:
-                if stream.name == stream_name:
-                    return stream
-        return None
+        return self._catalog
 
     def read(
         self,
-        stream_name: str,
-        header_row: Optional[int] = None,
-        batch_size: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
+        selected_streams: Optional[List[str]] = None,
+        state: Optional[Dict[str, Any]] = None
+    ) -> Iterator[Union[Record, StateMessage]]:
         """
-        Read all records from a sheet.
+        Read data from selected streams.
 
         Args:
-            stream_name: Name of the sheet to read.
-            header_row: Row containing headers (1-indexed). Uses config default if not specified.
-            batch_size: Rows per API call. Uses config default if not specified.
+            selected_streams: List of stream names to read (None = all)
+            state: Optional state from previous sync (not used for full refresh)
 
         Yields:
-            Dictionary for each row with column headers as keys.
+            Record and StateMessage objects
 
-        Raises:
-            APIError: If the API request fails.
+        Example:
+            for message in connector.read(selected_streams=["Sheet1"]):
+                if isinstance(message, Record):
+                    print(message.to_json())
         """
-        # Get stream-specific configuration
-        stream_config = self._get_stream_config(stream_name)
+        streams = self._get_streams()
 
-        effective_header_row = (
-            header_row
-            or (stream_config.header_row if stream_config else None)
-            or self.config.header_row
-        )
+        # Filter streams if selection provided
+        if selected_streams:
+            streams = [s for s in streams if s.name in selected_streams]
+            logger.info(f"Reading from {len(streams)} selected streams")
+        else:
+            logger.info(f"Reading from all {len(streams)} streams")
 
-        effective_batch_size = (
-            batch_size
-            or (stream_config.batch_size if stream_config else None)
-            or self.config.row_batch_size
-        )
+        # Also filter by configured sheets if specified
+        if self.config.sheets:
+            configured_names = {s.name for s in self.config.sheets}
+            streams = [s for s in streams if s.name in configured_names]
 
-        stream = SheetStream(
-            client=self.client,
-            spreadsheet_id=self.config.spreadsheet_id,
-            sheet_name=stream_name,
-            header_row=effective_header_row,
-            batch_size=effective_batch_size,
-            include_row_number=self.config.include_row_number,
-        )
+            # Apply sheet-specific configuration
+            for stream in streams:
+                sheet_config = next(
+                    (s for s in self.config.sheets if s.name == stream.name),
+                    None
+                )
+                if sheet_config:
+                    stream.header_row = sheet_config.headers_row
+                    stream.skip_rows = sheet_config.skip_rows
+                    if sheet_config.range:
+                        stream.range_notation = sheet_config.range
 
-        yield from stream.read()
+        for stream in streams:
+            logger.info(f"Reading stream: {stream.name}")
 
-    def read_all(
+            record_count = 0
+            started_at = get_timestamp()
+
+            try:
+                for record_data in stream.read_records():
+                    record = Record(
+                        stream=stream.name,
+                        data=record_data,
+                        emitted_at=get_timestamp()
+                    )
+                    yield record
+                    record_count += 1
+
+                # Emit state after each stream
+                stream_state = {
+                    "stream": stream.name,
+                    "completed": True,
+                    "records_read": record_count,
+                    "completed_at": get_timestamp()
+                }
+
+                yield StateMessage(data=stream_state)
+
+                logger.info(f"Completed stream '{stream.name}': {record_count} records")
+
+            except GoogleSheetsError as e:
+                logger.error(f"Error reading stream '{stream.name}': {e}")
+                # Emit error state
+                yield StateMessage(data={
+                    "stream": stream.name,
+                    "error": str(e),
+                    "records_read": record_count,
+                    "failed_at": get_timestamp()
+                })
+
+    def read_stream(
         self,
-        catalog: Optional[Catalog] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
+        stream_name: str
+    ) -> Iterator[Dict[str, Any]]:
         """
-        Read all records from all configured streams.
+        Read data from a specific stream.
 
         Args:
-            catalog: Optional catalog to use. If not provided, discovery is performed.
+            stream_name: Name of the stream to read
 
         Yields:
-            Dictionary containing stream name and record data:
-            {
-                "_stream": "sheet_name",
-                ...record_data
-            }
+            Dictionary records
+
+        Example:
+            for record in connector.read_stream("Sheet1"):
+                print(record)
         """
-        if catalog is None:
-            catalog = self.discover()
+        stream = self.stream_factory.get_stream(stream_name)
 
-        for entry in catalog.streams:
-            stream_name = entry.stream_name
-            logger.info(f"Reading stream: {stream_name}")
+        if stream is None:
+            raise GoogleSheetsError(f"Stream '{stream_name}' not found")
 
-            for record in self.read(stream_name):
-                yield {"_stream": stream_name, **record}
+        yield from stream.read_records()
 
-    def get_stream_metadata(self, stream_name: str) -> StreamMetadata:
+    def sync(
+        self,
+        selected_streams: Optional[List[str]] = None
+    ) -> List[SyncResult]:
+        """
+        Perform a full sync of selected streams.
+
+        Args:
+            selected_streams: List of stream names to sync (None = all)
+
+        Returns:
+            List of SyncResult for each stream
+
+        Example:
+            results = connector.sync(selected_streams=["Sheet1", "Sheet2"])
+            for result in results:
+                print(f"{result.stream_name}: {result.records_count} records")
+        """
+        results = []
+        streams = self._get_streams()
+
+        if selected_streams:
+            streams = [s for s in streams if s.name in selected_streams]
+
+        for stream in streams:
+            started_at = get_timestamp()
+            record_count = 0
+            error_message = None
+
+            try:
+                for _ in stream.read_records():
+                    record_count += 1
+
+                success = True
+
+            except GoogleSheetsError as e:
+                success = False
+                error_message = str(e)
+                logger.error(f"Sync failed for stream '{stream.name}': {e}")
+
+            results.append(SyncResult(
+                stream_name=stream.name,
+                records_count=record_count,
+                success=success,
+                error=error_message,
+                started_at=started_at,
+                completed_at=get_timestamp()
+            ))
+
+        return results
+
+    def get_stream_metadata(
+        self,
+        stream_name: str
+    ) -> Optional[StreamMetadata]:
         """
         Get metadata for a specific stream.
 
         Args:
-            stream_name: Name of the sheet.
+            stream_name: Name of the stream
 
         Returns:
-            StreamMetadata with sheet information.
+            StreamMetadata or None if not found
         """
-        sheets_info = self._get_sheet_info()
+        stream = self.stream_factory.get_stream(stream_name)
 
-        for info in sheets_info:
-            if info["title"] == stream_name:
-                return StreamMetadata(
-                    name=info["title"],
-                    sheet_id=info["sheet_id"],
-                    row_count=info["row_count"],
-                    column_count=info["column_count"],
-                )
+        if stream is None:
+            return None
 
-        raise ValueError(f"Stream not found: {stream_name}")
+        return stream.get_stream_metadata()
 
-    def close(self) -> None:
-        """Close the connector and release resources."""
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-        self._authenticator = None
-        self._spreadsheet_metadata = None
-        logger.debug("Connector closed")
+    def get_all_stream_metadata(self) -> List[StreamMetadata]:
+        """
+        Get metadata for all streams.
 
-    def __enter__(self) -> "GoogleSheetsConnector":
-        """Context manager entry."""
-        return self
+        Returns:
+            List of StreamMetadata
+        """
+        streams = self._get_streams()
+        return [s.get_stream_metadata() for s in streams]
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Context manager exit."""
-        self.close()
+    def _get_streams(self) -> List[SheetStream]:
+        """
+        Get all available streams.
+
+        Returns:
+            List of SheetStream instances
+        """
+        if self._streams is None:
+            self._streams = self.stream_factory.discover_streams()
+        return self._streams
 
 
-def create_connector(config_dict: Dict[str, Any]) -> GoogleSheetsConnector:
+def create_connector(config: Union[Dict[str, Any], str]) -> GoogleSheetsConnector:
     """
-    Factory function to create a connector from a configuration dictionary.
+    Factory function to create a connector from config.
 
     Args:
-        config_dict: Configuration dictionary containing:
-            - spreadsheet_id: The spreadsheet ID
-            - credentials: Authentication credentials
-            - Optional: streams, row_batch_size, header_row, etc.
+        config: Configuration as dictionary or JSON string
 
     Returns:
-        Configured GoogleSheetsConnector instance.
+        GoogleSheetsConnector instance
 
     Example:
-    ```python
-    connector = create_connector({
-        "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-        "credentials": {
-            "auth_type": "service_account",
-            "project_id": "my-project",
-            "private_key": "-----BEGIN PRIVATE KEY-----...",
-            "client_email": "connector@my-project.iam.gserviceaccount.com",
-        },
-    })
-    ```
+        connector = create_connector({
+            "spreadsheet_id": "your-id",
+            "credentials": {
+                "auth_type": "service_account",
+                "service_account_info": "..."
+            }
+        })
     """
-    config = GoogleSheetsConfig.from_dict(config_dict)
-    return GoogleSheetsConnector(config)
+    if isinstance(config, str):
+        config = json.loads(config)
+
+    sheets_config = GoogleSheetsConfig(**config)
+    return GoogleSheetsConnector(sheets_config)
+
+
+# CLI interface when run as a script
+if __name__ == "__main__":
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Google Sheets Source Connector")
+    parser.add_argument("command", choices=["check", "discover", "read"])
+    parser.add_argument("--config", required=True, help="Path to config file")
+    parser.add_argument("--catalog", help="Path to catalog file (for read)")
+    parser.add_argument("--state", help="Path to state file (for read)")
+
+    args = parser.parse_args()
+
+    # Load config
+    with open(args.config, "r") as f:
+        config_data = json.load(f)
+
+    connector = create_connector(config_data)
+
+    if args.command == "check":
+        status = connector.check()
+        print(json.dumps({
+            "type": "CONNECTION_STATUS",
+            "connectionStatus": {
+                "status": "SUCCEEDED" if status.connected else "FAILED",
+                "message": status.message
+            }
+        }))
+
+    elif args.command == "discover":
+        catalog = connector.discover()
+        print(json.dumps(catalog.to_dict(), indent=2))
+
+    elif args.command == "read":
+        selected = None
+        if args.catalog:
+            with open(args.catalog, "r") as f:
+                catalog_data = json.load(f)
+            selected = [
+                s["stream"]["name"]
+                for s in catalog_data.get("streams", [])
+            ]
+
+        state = None
+        if args.state:
+            with open(args.state, "r") as f:
+                state = json.load(f)
+
+        for message in connector.read(selected_streams=selected, state=state):
+            print(message.to_json())

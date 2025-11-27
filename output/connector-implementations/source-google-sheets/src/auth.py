@@ -1,357 +1,415 @@
 """
-Authentication module for Google Sheets connector.
+Authentication handling for Google Sheets connector.
 
-Supports multiple authentication methods:
-- Service Account (recommended for server-to-server)
-- OAuth2 (for user-delegated access)
+This module provides authentication support for:
+- Service Account credentials
+- OAuth 2.0 credentials
+- API Key authentication (public sheets only)
 """
 
+from typing import Any, Dict, Optional
 import json
+import time
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
 
-from google.oauth2 import service_account
-from google.oauth2.credentials import Credentials as OAuth2Credentials_Google
+from google.oauth2.service_account import Credentials as ServiceAccountCreds
+from google.oauth2.credentials import Credentials as OAuth2Creds
 from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError, GoogleAuthError
+from googleapiclient.discovery import build, Resource
+
+from .config import (
+    GoogleSheetsConfig,
+    ServiceAccountCredentials,
+    OAuth2Credentials,
+    APIKeyCredentials,
+    CredentialsUnion,
+)
+from .utils import AuthenticationError
 
 logger = logging.getLogger(__name__)
 
 
-class AuthenticationError(Exception):
-    """Raised when authentication fails."""
-
-    def __init__(self, message: str, original_error: Optional[Exception] = None):
-        super().__init__(message)
-        self.original_error = original_error
-        self.message = message
-
-    def __str__(self) -> str:
-        if self.original_error:
-            return f"{self.message}: {self.original_error}"
-        return self.message
+# Google Sheets API scopes
+SCOPES_READONLY = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SCOPES_FULL = ["https://www.googleapis.com/auth/spreadsheets"]
+DRIVE_READONLY = ["https://www.googleapis.com/auth/drive.readonly"]
 
 
-class GoogleSheetsAuthenticator(ABC):
-    """Abstract base class for Google Sheets authentication."""
+class BaseAuthenticator(ABC):
+    """Abstract base class for authentication handlers."""
 
-    # Required scopes for reading spreadsheets
-    DEFAULT_SCOPES = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
-    ]
+    @abstractmethod
+    def get_credentials(self) -> Any:
+        """Get authenticated credentials."""
+        pass
 
-    def __init__(self, scopes: Optional[list[str]] = None):
+    @abstractmethod
+    def build_service(self) -> Resource:
+        """Build and return the Google Sheets API service."""
+        pass
+
+    @abstractmethod
+    def is_valid(self) -> bool:
+        """Check if the current credentials are valid."""
+        pass
+
+    @abstractmethod
+    def refresh(self) -> None:
+        """Refresh the credentials if needed."""
+        pass
+
+
+class ServiceAccountAuthenticator(BaseAuthenticator):
+    """Authenticator for service account credentials."""
+
+    def __init__(
+        self,
+        credentials: ServiceAccountCredentials,
+        scopes: Optional[list] = None
+    ):
         """
-        Initialize authenticator with optional custom scopes.
+        Initialize service account authenticator.
 
         Args:
-            scopes: List of OAuth scopes. Defaults to read-only spreadsheet access.
+            credentials: Service account credentials configuration
+            scopes: List of OAuth scopes (defaults to readonly)
         """
-        self.scopes = scopes or self.DEFAULT_SCOPES
-        self._credentials: Optional[Any] = None
+        self.credentials_config = credentials
+        self.scopes = scopes or SCOPES_READONLY
+        self._credentials: Optional[ServiceAccountCreds] = None
+        self._service: Optional[Resource] = None
 
-    @abstractmethod
-    def authenticate(self) -> Any:
+    def get_credentials(self) -> ServiceAccountCreds:
         """
-        Perform authentication and return credentials.
+        Get service account credentials.
 
         Returns:
-            Google credentials object suitable for API client initialization.
+            Google ServiceAccountCredentials object
 
         Raises:
-            AuthenticationError: If authentication fails.
+            AuthenticationError: If credentials are invalid
         """
-        pass
-
-    @abstractmethod
-    def refresh_if_needed(self) -> bool:
-        """
-        Refresh credentials if expired.
-
-        Returns:
-            True if credentials were refreshed, False if still valid.
-
-        Raises:
-            AuthenticationError: If refresh fails.
-        """
-        pass
-
-    @property
-    def credentials(self) -> Any:
-        """Get the current credentials, authenticating if needed."""
         if self._credentials is None:
-            self.authenticate()
+            try:
+                credentials_dict = self.credentials_config.get_credentials_dict()
+                self._credentials = ServiceAccountCreds.from_service_account_info(
+                    credentials_dict,
+                    scopes=self.scopes
+                )
+                logger.info("Service account credentials initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize service account credentials: {e}")
+                raise AuthenticationError(f"Failed to initialize credentials: {e}")
+
         return self._credentials
 
-    @property
+    def build_service(self) -> Resource:
+        """
+        Build the Google Sheets API service.
+
+        Returns:
+            Google Sheets API service resource
+
+        Raises:
+            AuthenticationError: If service cannot be built
+        """
+        if self._service is None:
+            try:
+                credentials = self.get_credentials()
+                self._service = build(
+                    "sheets",
+                    "v4",
+                    credentials=credentials,
+                    cache_discovery=False
+                )
+                logger.info("Google Sheets API service built successfully")
+            except Exception as e:
+                logger.error(f"Failed to build Sheets API service: {e}")
+                raise AuthenticationError(f"Failed to build service: {e}")
+
+        return self._service
+
     def is_valid(self) -> bool:
-        """Check if current credentials are valid."""
+        """
+        Check if credentials are valid.
+
+        Returns:
+            True if credentials are valid, False otherwise
+        """
         if self._credentials is None:
             return False
-        return self._credentials.valid
+
+        return self._credentials.valid and not self._credentials.expired
+
+    def refresh(self) -> None:
+        """
+        Refresh the credentials if needed.
+
+        Service account credentials typically don't need refresh
+        as they are automatically refreshed by the client library.
+        """
+        if self._credentials is not None and self._credentials.expired:
+            try:
+                self._credentials.refresh(Request())
+                logger.info("Service account credentials refreshed")
+            except Exception as e:
+                logger.error(f"Failed to refresh credentials: {e}")
+                raise AuthenticationError(f"Failed to refresh credentials: {e}")
 
 
-class ServiceAccountAuthenticator(GoogleSheetsAuthenticator):
-    """
-    Authenticator using Google Service Account credentials.
+class OAuth2Authenticator(BaseAuthenticator):
+    """Authenticator for OAuth 2.0 credentials."""
 
-    This is the recommended authentication method for automated pipelines
-    and server-to-server communication.
-
-    Note: The spreadsheet must be shared with the service account email
-    (found in the credentials JSON as 'client_email').
-    """
+    TOKEN_URI = "https://oauth2.googleapis.com/token"
 
     def __init__(
         self,
-        credentials_info: Dict[str, Any],
-        scopes: Optional[list[str]] = None,
+        credentials: OAuth2Credentials,
+        scopes: Optional[list] = None
     ):
         """
-        Initialize with service account credentials.
+        Initialize OAuth2 authenticator.
 
         Args:
-            credentials_info: Dictionary containing service account JSON key data.
-                Must include 'type', 'project_id', 'private_key', 'client_email'.
-            scopes: Optional list of OAuth scopes.
-
-        Raises:
-            AuthenticationError: If credentials_info is invalid.
+            credentials: OAuth2 credentials configuration
+            scopes: List of OAuth scopes (defaults to readonly)
         """
-        super().__init__(scopes)
-        self._validate_credentials_info(credentials_info)
-        self._credentials_info = credentials_info
+        self.credentials_config = credentials
+        self.scopes = scopes or SCOPES_READONLY
+        self._credentials: Optional[OAuth2Creds] = None
+        self._service: Optional[Resource] = None
 
-    @staticmethod
-    def _validate_credentials_info(credentials_info: Dict[str, Any]) -> None:
-        """Validate service account credentials structure."""
-        required_fields = ["type", "project_id", "private_key", "client_email"]
-        missing = [f for f in required_fields if f not in credentials_info]
-
-        if missing:
-            raise AuthenticationError(
-                f"Invalid service account credentials: missing fields {missing}"
-            )
-
-        if credentials_info.get("type") != "service_account":
-            raise AuthenticationError(
-                f"Invalid credentials type: expected 'service_account', "
-                f"got '{credentials_info.get('type')}'"
-            )
-
-    @classmethod
-    def from_json_file(
-        cls,
-        file_path: str,
-        scopes: Optional[list[str]] = None,
-    ) -> "ServiceAccountAuthenticator":
+    def get_credentials(self) -> OAuth2Creds:
         """
-        Create authenticator from a JSON key file.
-
-        Args:
-            file_path: Path to the service account JSON key file.
-            scopes: Optional list of OAuth scopes.
+        Get OAuth2 credentials.
 
         Returns:
-            Configured ServiceAccountAuthenticator instance.
+            Google OAuth2Credentials object
 
         Raises:
-            AuthenticationError: If file cannot be read or is invalid.
-        """
-        try:
-            with open(file_path, "r") as f:
-                credentials_info = json.load(f)
-            return cls(credentials_info, scopes)
-        except FileNotFoundError:
-            raise AuthenticationError(f"Credentials file not found: {file_path}")
-        except json.JSONDecodeError as e:
-            raise AuthenticationError(f"Invalid JSON in credentials file", e)
-
-    def authenticate(self) -> service_account.Credentials:
-        """
-        Authenticate using service account credentials.
-
-        Returns:
-            Google service account credentials object.
-
-        Raises:
-            AuthenticationError: If authentication fails.
-        """
-        try:
-            self._credentials = service_account.Credentials.from_service_account_info(
-                self._credentials_info,
-                scopes=self.scopes,
-            )
-            logger.info(
-                f"Authenticated as service account: "
-                f"{self._credentials_info.get('client_email')}"
-            )
-            return self._credentials
-        except ValueError as e:
-            raise AuthenticationError("Failed to create service account credentials", e)
-
-    def refresh_if_needed(self) -> bool:
-        """
-        Refresh credentials if expired.
-
-        Service account credentials are automatically refreshed by the
-        Google client library, but this method forces a refresh if needed.
-
-        Returns:
-            True if credentials were refreshed, False if still valid.
+            AuthenticationError: If credentials are invalid
         """
         if self._credentials is None:
-            self.authenticate()
-            return True
-
-        if not self._credentials.valid:
             try:
-                self._credentials.refresh(Request())
-                logger.debug("Service account credentials refreshed")
-                return True
-            except RefreshError as e:
-                raise AuthenticationError("Failed to refresh credentials", e)
-
-        return False
-
-    @property
-    def service_account_email(self) -> str:
-        """Get the service account email address."""
-        return self._credentials_info.get("client_email", "")
-
-    @property
-    def project_id(self) -> str:
-        """Get the Google Cloud project ID."""
-        return self._credentials_info.get("project_id", "")
-
-
-class OAuth2Authenticator(GoogleSheetsAuthenticator):
-    """
-    Authenticator using OAuth2 credentials with refresh token.
-
-    Use this for user-delegated access when the connector needs to
-    access spreadsheets on behalf of a specific user.
-    """
-
-    def __init__(
-        self,
-        client_id: str,
-        client_secret: str,
-        refresh_token: str,
-        scopes: Optional[list[str]] = None,
-    ):
-        """
-        Initialize with OAuth2 credentials.
-
-        Args:
-            client_id: OAuth2 client ID from Google Cloud Console.
-            client_secret: OAuth2 client secret.
-            refresh_token: Long-lived refresh token for the user.
-            scopes: Optional list of OAuth scopes.
-        """
-        super().__init__(scopes)
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._refresh_token = refresh_token
-
-    def authenticate(self) -> OAuth2Credentials_Google:
-        """
-        Authenticate using OAuth2 credentials.
-
-        Returns:
-            Google OAuth2 credentials object.
-
-        Raises:
-            AuthenticationError: If authentication fails.
-        """
-        try:
-            self._credentials = OAuth2Credentials_Google(
-                token=None,  # Will be refreshed immediately
-                refresh_token=self._refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                scopes=self.scopes,
-            )
-            # Force initial token refresh
-            self._credentials.refresh(Request())
-            logger.info("OAuth2 authentication successful")
-            return self._credentials
-        except GoogleAuthError as e:
-            raise AuthenticationError("OAuth2 authentication failed", e)
-
-    def refresh_if_needed(self) -> bool:
-        """
-        Refresh OAuth2 credentials if expired.
-
-        Returns:
-            True if credentials were refreshed, False if still valid.
-
-        Raises:
-            AuthenticationError: If refresh fails.
-        """
-        if self._credentials is None:
-            self.authenticate()
-            return True
-
-        if self._credentials.expired:
-            try:
-                self._credentials.refresh(Request())
-                logger.debug("OAuth2 credentials refreshed")
-                return True
-            except RefreshError as e:
-                raise AuthenticationError(
-                    "Failed to refresh OAuth2 token. User may need to re-authorize.",
-                    e,
+                self._credentials = OAuth2Creds(
+                    token=self.credentials_config.access_token,
+                    refresh_token=self.credentials_config.refresh_token,
+                    client_id=self.credentials_config.client_id,
+                    client_secret=self.credentials_config.client_secret,
+                    token_uri=self.TOKEN_URI,
+                    scopes=self.scopes
                 )
 
-        return False
+                # Refresh to get valid access token if needed
+                if not self._credentials.valid:
+                    self.refresh()
+
+                logger.info("OAuth2 credentials initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize OAuth2 credentials: {e}")
+                raise AuthenticationError(f"Failed to initialize credentials: {e}")
+
+        return self._credentials
+
+    def build_service(self) -> Resource:
+        """
+        Build the Google Sheets API service.
+
+        Returns:
+            Google Sheets API service resource
+
+        Raises:
+            AuthenticationError: If service cannot be built
+        """
+        if self._service is None:
+            try:
+                credentials = self.get_credentials()
+                self._service = build(
+                    "sheets",
+                    "v4",
+                    credentials=credentials,
+                    cache_discovery=False
+                )
+                logger.info("Google Sheets API service built successfully")
+            except Exception as e:
+                logger.error(f"Failed to build Sheets API service: {e}")
+                raise AuthenticationError(f"Failed to build service: {e}")
+
+        return self._service
+
+    def is_valid(self) -> bool:
+        """
+        Check if credentials are valid.
+
+        Returns:
+            True if credentials are valid, False otherwise
+        """
+        if self._credentials is None:
+            return False
+
+        return self._credentials.valid and not self._credentials.expired
+
+    def refresh(self) -> None:
+        """
+        Refresh the OAuth2 credentials.
+
+        Raises:
+            AuthenticationError: If refresh fails
+        """
+        if self._credentials is not None:
+            try:
+                self._credentials.refresh(Request())
+                logger.info("OAuth2 credentials refreshed successfully")
+            except Exception as e:
+                logger.error(f"Failed to refresh OAuth2 credentials: {e}")
+                raise AuthenticationError(f"Failed to refresh credentials: {e}")
 
 
-def create_authenticator(
-    credentials_config: Dict[str, Any],
-    scopes: Optional[list[str]] = None,
-) -> GoogleSheetsAuthenticator:
+class APIKeyAuthenticator(BaseAuthenticator):
+    """Authenticator for API Key (public sheets only)."""
+
+    def __init__(self, credentials: APIKeyCredentials):
+        """
+        Initialize API Key authenticator.
+
+        Args:
+            credentials: API Key credentials configuration
+        """
+        self.credentials_config = credentials
+        self._service: Optional[Resource] = None
+
+    def get_credentials(self) -> str:
+        """
+        Get API key.
+
+        Returns:
+            API key string
+        """
+        return self.credentials_config.api_key
+
+    def build_service(self) -> Resource:
+        """
+        Build the Google Sheets API service with API key.
+
+        Returns:
+            Google Sheets API service resource
+
+        Raises:
+            AuthenticationError: If service cannot be built
+        """
+        if self._service is None:
+            try:
+                self._service = build(
+                    "sheets",
+                    "v4",
+                    developerKey=self.credentials_config.api_key,
+                    cache_discovery=False
+                )
+                logger.info("Google Sheets API service built with API key")
+            except Exception as e:
+                logger.error(f"Failed to build Sheets API service: {e}")
+                raise AuthenticationError(f"Failed to build service: {e}")
+
+        return self._service
+
+    def is_valid(self) -> bool:
+        """
+        Check if API key is valid.
+
+        API keys don't expire, so we return True.
+        Actual validation happens on API call.
+
+        Returns:
+            True (API keys don't expire)
+        """
+        return True
+
+    def refresh(self) -> None:
+        """API keys don't need refresh."""
+        pass
+
+
+class GoogleSheetsAuthenticator:
     """
-    Factory function to create the appropriate authenticator.
+    Factory class for creating the appropriate authenticator.
 
-    Args:
-        credentials_config: Dictionary containing authentication configuration.
-            For service account: Include full service account JSON.
-            For OAuth2: Include 'client_id', 'client_secret', 'refresh_token'.
-        scopes: Optional list of OAuth scopes.
-
-    Returns:
-        Configured authenticator instance.
-
-    Raises:
-        AuthenticationError: If credentials configuration is invalid.
+    This class examines the credentials type and creates the
+    appropriate authenticator instance.
     """
-    auth_type = credentials_config.get("auth_type", "service_account")
 
-    if auth_type == "service_account":
-        # Extract nested credentials if present
-        creds = credentials_config.get("credentials", credentials_config)
-        return ServiceAccountAuthenticator(creds, scopes)
+    def __init__(
+        self,
+        config: GoogleSheetsConfig,
+        scopes: Optional[list] = None
+    ):
+        """
+        Initialize the authenticator factory.
 
-    elif auth_type == "oauth2":
-        required = ["client_id", "client_secret", "refresh_token"]
-        missing = [f for f in required if f not in credentials_config]
-        if missing:
-            raise AuthenticationError(
-                f"OAuth2 credentials missing required fields: {missing}"
+        Args:
+            config: Google Sheets configuration
+            scopes: Optional list of OAuth scopes
+        """
+        self.config = config
+        self.scopes = scopes or SCOPES_READONLY
+        self._authenticator: Optional[BaseAuthenticator] = None
+
+    def get_authenticator(self) -> BaseAuthenticator:
+        """
+        Get the appropriate authenticator based on credentials type.
+
+        Returns:
+            Authenticator instance
+
+        Raises:
+            AuthenticationError: If credentials type is unknown
+        """
+        if self._authenticator is not None:
+            return self._authenticator
+
+        credentials = self.config.credentials
+
+        if isinstance(credentials, ServiceAccountCredentials):
+            self._authenticator = ServiceAccountAuthenticator(
+                credentials,
+                self.scopes
             )
-        return OAuth2Authenticator(
-            client_id=credentials_config["client_id"],
-            client_secret=credentials_config["client_secret"],
-            refresh_token=credentials_config["refresh_token"],
-            scopes=scopes,
-        )
+        elif isinstance(credentials, OAuth2Credentials):
+            self._authenticator = OAuth2Authenticator(
+                credentials,
+                self.scopes
+            )
+        elif isinstance(credentials, APIKeyCredentials):
+            self._authenticator = APIKeyAuthenticator(credentials)
+        else:
+            raise AuthenticationError(
+                f"Unknown credentials type: {type(credentials).__name__}"
+            )
 
-    else:
-        raise AuthenticationError(
-            f"Unknown authentication type: {auth_type}. "
-            f"Supported types: 'service_account', 'oauth2'"
-        )
+        return self._authenticator
+
+    def build_service(self) -> Resource:
+        """
+        Build and return the Google Sheets API service.
+
+        Returns:
+            Google Sheets API service resource
+        """
+        authenticator = self.get_authenticator()
+        return authenticator.build_service()
+
+    def is_valid(self) -> bool:
+        """
+        Check if current credentials are valid.
+
+        Returns:
+            True if credentials are valid
+        """
+        if self._authenticator is None:
+            return False
+        return self._authenticator.is_valid()
+
+    def refresh(self) -> None:
+        """Refresh credentials if needed."""
+        if self._authenticator is not None:
+            self._authenticator.refresh()

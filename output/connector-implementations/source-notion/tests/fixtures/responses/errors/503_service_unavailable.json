@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 503,
+  "code": "service_unavailable",
+  "message": "Notion is temporarily unavailable. Please try again later."
+}

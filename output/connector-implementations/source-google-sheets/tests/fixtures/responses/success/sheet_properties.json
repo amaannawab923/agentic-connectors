@@ -1,0 +1,13 @@
+{
+  "sheetId": 0,
+  "title": "Sheet1",
+  "index": 0,
+  "sheetType": "GRID",
+  "gridProperties": {
+    "rowCount": 1000,
+    "columnCount": 26,
+    "frozenRowCount": 1,
+    "frozenColumnCount": 0,
+    "hideGridlines": false
+  }
+}

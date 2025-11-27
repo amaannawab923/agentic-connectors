@@ -1,0 +1,16 @@
+{
+  "range": "Sheet1!A1:D10",
+  "majorDimension": "ROWS",
+  "values": [
+    ["ID", "Name", "Email", "Status"],
+    ["1", "John Doe", "john.doe@example.com", "active"],
+    ["2", "Jane Smith", "jane.smith@example.com", "active"],
+    ["3", "Bob Johnson", "bob.johnson@example.com", "inactive"],
+    ["4", "Alice Williams", "alice.williams@example.com", "active"],
+    ["5", "Charlie Brown", "charlie.brown@example.com", "active"],
+    ["6", "Diana Prince", "diana.prince@example.com", "pending"],
+    ["7", "Eve Anderson", "eve.anderson@example.com", "active"],
+    ["8", "Frank Miller", "frank.miller@example.com", "inactive"],
+    ["9", "Grace Lee", "grace.lee@example.com", "active"]
+  ]
+}

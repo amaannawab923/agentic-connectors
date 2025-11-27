@@ -1,0 +1,6 @@
+{
+  "object": "error",
+  "status": 429,
+  "code": "rate_limited",
+  "message": "Rate limit exceeded. Please retry after 1 second."
+}

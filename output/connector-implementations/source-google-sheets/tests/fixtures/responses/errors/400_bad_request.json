@@ -1,0 +1,16 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Invalid range: 'InvalidSheet!A1:Z100'. Sheet not found.",
+    "status": "INVALID_ARGUMENT",
+    "errors": [
+      {
+        "message": "Invalid range: 'InvalidSheet!A1:Z100'. Sheet not found.",
+        "domain": "global",
+        "reason": "badRequest",
+        "locationType": "parameter",
+        "location": "range"
+      }
+    ]
+  }
+}

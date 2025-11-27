@@ -25,6 +25,7 @@ class AgentType(str, Enum):
 
     RESEARCH = "research"
     GENERATOR = "generator"
+    MOCK_GENERATOR = "mock_generator"
     TESTER = "tester"
     REVIEWER = "reviewer"
     PUBLISHER = "publisher"

@@ -18,6 +18,7 @@ class PipelinePhase(str, Enum):
     PENDING = "pending"
     RESEARCHING = "researching"
     GENERATING = "generating"
+    MOCK_GENERATING = "mock_generating"
     TESTING = "testing"
     TEST_REVIEWING = "test_reviewing"
     REVIEWING = "reviewing"
@@ -148,6 +149,13 @@ class PipelineState(TypedDict):
     connector_dir: Optional[str]
 
     # ─────────────────────────────────────────────────────────────
+    # Mock Generation Output (fixtures and conftest.py)
+    # ─────────────────────────────────────────────────────────────
+    mock_generation_output: Optional[Dict[str, Any]]  # {fixtures_dir, conftest_path, fixture_count}
+    fixtures_created: Annotated[List[str], reduce_list_append]  # List of fixture file paths
+    mock_generation_skipped: bool  # True if MockGenerator was skipped (fixtures already exist)
+
+    # ─────────────────────────────────────────────────────────────
     # Test Results
     # ─────────────────────────────────────────────────────────────
     test_results: Optional[Dict[str, Any]]  # {passed, failed, total, coverage_ratio, failures}
@@ -242,6 +250,11 @@ def create_initial_state(
         generated_code=None,
         test_code=None,
         connector_dir=None,
+
+        # Mock generation output
+        mock_generation_output=None,
+        fixtures_created=[],
+        mock_generation_skipped=False,
 
         # Test results
         test_results=None,

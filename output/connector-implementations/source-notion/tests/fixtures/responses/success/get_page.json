@@ -1,0 +1,56 @@
+{
+  "object": "page",
+  "id": "page1-1234-5678-9abc-def012345678",
+  "created_time": "2024-01-15T10:30:00.000Z",
+  "created_by": {
+    "object": "user",
+    "id": "12345678-90ab-cdef-1234-567890abcdef"
+  },
+  "last_edited_time": "2024-01-20T16:45:00.000Z",
+  "last_edited_by": {
+    "object": "user",
+    "id": "12345678-90ab-cdef-1234-567890abcdef"
+  },
+  "cover": {
+    "type": "external",
+    "external": {
+      "url": "https://images.unsplash.com/example-cover.jpg"
+    }
+  },
+  "icon": {
+    "type": "emoji",
+    "emoji": "📄"
+  },
+  "parent": {
+    "type": "workspace",
+    "workspace": true
+  },
+  "archived": false,
+  "properties": {
+    "title": {
+      "id": "title",
+      "type": "title",
+      "title": [
+        {
+          "type": "text",
+          "text": {
+            "content": "Project Overview",
+            "link": null
+          },
+          "annotations": {
+            "bold": false,
+            "italic": false,
+            "strikethrough": false,
+            "underline": false,
+            "code": false,
+            "color": "default"
+          },
+          "plain_text": "Project Overview",
+          "href": null
+        }
+      ]
+    }
+  },
+  "url": "https://www.notion.so/page1123456789abc",
+  "public_url": null
+}

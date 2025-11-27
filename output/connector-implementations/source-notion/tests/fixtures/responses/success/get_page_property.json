@@ -1,0 +1,28 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "property_item",
+      "type": "relation",
+      "id": "prop123",
+      "relation": {
+        "id": "related-page-1"
+      }
+    },
+    {
+      "object": "property_item",
+      "type": "relation",
+      "id": "prop123",
+      "relation": {
+        "id": "related-page-2"
+      }
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false,
+  "type": "property_item",
+  "property_item": {
+    "id": "prop123",
+    "type": "relation"
+  }
+}

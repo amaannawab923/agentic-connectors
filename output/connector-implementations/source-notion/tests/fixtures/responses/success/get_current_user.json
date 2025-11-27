@@ -1,0 +1,14 @@
+{
+  "object": "user",
+  "id": "ed12a34b-5678-9abc-def0-123456789abc",
+  "type": "bot",
+  "name": "Test Integration Bot",
+  "avatar_url": null,
+  "bot": {
+    "owner": {
+      "type": "workspace",
+      "workspace": true
+    },
+    "workspace_name": "Test Workspace"
+  }
+}

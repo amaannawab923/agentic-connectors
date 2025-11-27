@@ -1,0 +1,10 @@
+{
+  "object": "user",
+  "id": "12345678-90ab-cdef-1234-567890abcdef",
+  "type": "person",
+  "name": "John Doe",
+  "avatar_url": "https://secure.notion-static.com/abc123.jpg",
+  "person": {
+    "email": "john.doe@example.com"
+  }
+}
