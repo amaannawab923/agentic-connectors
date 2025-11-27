@@ -637,7 +637,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
         new_logs.append(_log(f"[TESTER] ERROR: Connector directory not found: {connector_dir}"))
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "error",
                 "passed": False,
                 "errors": [f"Connector directory not found: {connector_dir}"],
@@ -710,7 +710,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
 
             return {
                 "current_phase": PipelinePhase.TESTING.value,
-                "test_output": {
+                "test_results": {
                     "status": "failed",
                     "passed": False,
                     "errors": errors,
@@ -738,7 +738,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
 
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "passed",
                 "passed": True,
                 "tests_passed": tests_passed,
@@ -756,7 +756,7 @@ async def tester_node(state: PipelineState) -> Dict[str, Any]:
         new_logs.append(_log(f"[TESTER] EXCEPTION: {str(e)}"))
         return {
             "current_phase": PipelinePhase.TESTING.value,
-            "test_output": {
+            "test_results": {
                 "status": "error",
                 "passed": False,
                 "errors": [f"Tester exception: {str(e)}"],
@@ -807,7 +807,7 @@ async def test_reviewer_node(state: PipelineState) -> Dict[str, Any]:
     connector_name = state["connector_name"]
     connector_dir = state.get("connector_dir", "")
     connector_type = state.get("connector_type", "source")
-    test_output = state.get("test_output", {})
+    test_output = state.get("test_results", {})
     generated_code = state.get("generated_code", {})
     test_retries = state.get("test_retries", 0)
     gen_fix_retries = state.get("gen_fix_retries", 0)
