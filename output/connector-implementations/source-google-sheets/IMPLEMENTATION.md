@@ -1,192 +1,174 @@
-# Google Sheets Source Connector - Implementation Summary
+# Google Sheets Source Connector Implementation
 
 ## Overview
 
-This is a production-ready source connector for extracting data from Google Sheets spreadsheets. The connector is standalone and does not rely on any external connector frameworks (no Airbyte CDK, no Singer SDK).
-
-## Architecture
-
-### File Structure
-
-```
-src/
-├── __init__.py      # Package exports
-├── auth.py          # Authentication handling (Service Account, OAuth2)
-├── client.py        # API client with rate limiting and retry logic
-├── config.py        # Configuration models using Pydantic
-├── connector.py     # Main connector class
-├── streams.py       # Data stream definitions
-└── utils.py         # Utility functions
-```
+This is a production-ready source connector for extracting data from Google Sheets. It provides a standalone implementation without external connector frameworks, featuring robust error handling, rate limiting, and comprehensive type hints.
 
 ## Features
 
-### Authentication Methods
+- **Multiple Authentication Methods**: Service Account, OAuth 2.0, and API Key support
+- **Rate Limiting**: Built-in rate limiter respecting Google's 60 requests/minute per-user limit
+- **Exponential Backoff**: Automatic retries with jitter for transient failures
+- **Schema Inference**: Automatic type inference from sample data
+- **Batch Reading**: Configurable batch size for memory-efficient data extraction
+- **Full Type Safety**: Complete type hints throughout the codebase
+- **Pydantic Validation**: Configuration validation using Pydantic v2
 
-1. **Service Account** (Recommended for automated pipelines)
-   - Uses a JSON key file from Google Cloud Console
-   - The spreadsheet must be shared with the service account email
-   - Supports automatic credential refresh
+## File Structure
 
-2. **OAuth2** (For user-delegated access)
-   - Uses client ID, client secret, and refresh token
-   - Suitable when accessing spreadsheets on behalf of users
-   - Handles token refresh automatically
+```
+src/
+├── __init__.py          # Package exports
+├── auth.py              # Authentication handling (Service Account, OAuth2, API Key)
+├── client.py            # API client with rate limiting and retries
+├── config.py            # Pydantic configuration models
+├── connector.py         # Main connector class with check/discover/read
+├── streams.py           # Data stream definitions
+└── utils.py             # Utility functions and custom exceptions
+requirements.txt         # Python dependencies
+```
 
-### Rate Limiting & Retry Logic
+## Installation
 
-- Configurable requests per minute (default: 60, Google limit: 300/project)
-- Exponential backoff with jitter on rate limit errors (HTTP 429)
-- Automatic retries on server errors (5xx)
-- Configurable max retries and delay parameters
+```bash
+pip install -r requirements.txt
+```
 
-### Data Extraction
+## Quick Start
 
-- **Batch Reading**: Reads data in configurable batches (default: 1000 rows)
-- **Header Normalization**: Handles empty headers, duplicates, and special characters
-- **Schema Inference**: Automatically infers JSON Schema from sample data
-- **Multi-Sheet Support**: Can read from multiple sheets in a single spreadsheet
-
-## Usage Example
+### Using Service Account Authentication
 
 ```python
-from src import (
-    GoogleSheetsConnector,
-    GoogleSheetsConfig,
-    ServiceAccountCredentials,
-)
+from src import GoogleSheetsConnector, GoogleSheetsConfig, ServiceAccountCredentials
 
-# Configure the connector
+# Load your service account JSON
+with open('service_account.json', 'r') as f:
+    service_account_info = f.read()
+
 config = GoogleSheetsConfig(
-    spreadsheet_id="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+    spreadsheet_id="your-spreadsheet-id",
     credentials=ServiceAccountCredentials(
-        project_id="my-project",
-        private_key="-----BEGIN PRIVATE KEY-----\n...",
-        client_email="connector@my-project.iam.gserviceaccount.com",
-    ),
-    row_batch_size=1000,
-    header_row=1,
+        service_account_info=service_account_info
+    )
 )
 
-# Create connector instance
-with GoogleSheetsConnector(config) as connector:
-    # Test the connection
-    result = connector.check_connection()
-    if not result.success:
-        print(f"Connection failed: {result.message}")
-        exit(1)
+connector = GoogleSheetsConnector(config)
 
-    print(f"Connected to: {result.spreadsheet_title}")
+# Check connection
+status = connector.check()
+if status.connected:
+    print(f"Connected to: {status.spreadsheet_title}")
 
-    # Discover available streams (sheets)
+    # Discover available sheets
     catalog = connector.discover()
-    print(f"Found {len(catalog.streams)} sheets")
+    for entry in catalog.streams:
+        print(f"Found stream: {entry.stream_name}")
 
-    # Read data from a specific sheet
-    for record in connector.read("Sheet1"):
-        print(record)
+    # Read data
+    for record in connector.read():
+        print(record.to_json())
+```
 
-    # Or read from all sheets
-    for record in connector.read_all():
-        sheet_name = record.pop("_stream")
-        print(f"[{sheet_name}] {record}")
+### Using OAuth 2.0 Authentication
+
+```python
+from src import GoogleSheetsConnector, GoogleSheetsConfig, OAuth2Credentials
+
+config = GoogleSheetsConfig(
+    spreadsheet_id="your-spreadsheet-id",
+    credentials=OAuth2Credentials(
+        client_id="your-client-id",
+        client_secret="your-client-secret",
+        refresh_token="your-refresh-token"
+    )
+)
+
+connector = GoogleSheetsConnector(config)
 ```
 
 ## Configuration Options
 
-### GoogleSheetsConfig
-
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `spreadsheet_id` | str | Required | The ID from the Google Sheets URL |
-| `credentials` | ServiceAccountCredentials \| OAuth2Credentials | Required | Authentication credentials |
-| `streams` | List[StreamConfig] | None | Specific sheets to extract (all if None) |
-| `row_batch_size` | int | 1000 | Rows per API call |
-| `header_row` | int | 1 | Row containing column headers |
-| `include_row_number` | bool | True | Add `_row_number` field to records |
+| `spreadsheet_id` | str | required | Spreadsheet ID or full URL |
+| `credentials` | Union | required | Authentication credentials |
+| `batch_size` | int | 200 | Rows per API request |
+| `value_render_option` | str | "UNFORMATTED_VALUE" | How to render cell values |
+| `date_time_render_option` | str | "FORMATTED_STRING" | How to render dates |
+| `include_row_numbers` | bool | True | Include `_row_number` field |
+| `sanitize_column_names` | bool | True | Make column names JSON-safe |
+| `max_retries` | int | 5 | Maximum retry attempts |
+| `retry_delay` | float | 1.0 | Base delay between retries |
 
-### RateLimitSettings
+## CLI Usage
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `requests_per_minute` | int | 60 | Max requests per minute |
-| `max_retries` | int | 5 | Max retry attempts |
-| `base_delay` | float | 1.0 | Base delay for backoff (seconds) |
-| `max_delay` | float | 60.0 | Max delay between retries (seconds) |
+```bash
+# Check connection
+python -m src.connector check --config config.json
 
-## Error Handling
+# Discover streams
+python -m src.connector discover --config config.json
 
-The connector defines custom exceptions for clear error handling:
-
-- `AuthenticationError`: Credential or permission issues
-- `APIError`: Base API error with status code and reason
-- `RateLimitError`: Rate limit exceeded (HTTP 429)
-- `NotFoundError`: Spreadsheet or sheet not found (HTTP 404)
-- `PermissionDeniedError`: Access denied (HTTP 403)
-
-## API Compliance
-
-### Scopes Used
-
-```
-https://www.googleapis.com/auth/spreadsheets.readonly
-https://www.googleapis.com/auth/drive.readonly
+# Read data
+python -m src.connector read --config config.json
 ```
 
-### Rate Limits Respected
+## API Reference
 
-- 300 read requests/minute per project
-- 60 read requests/minute per user
-- 180 second request timeout
-- Automatic backoff on 429 responses
+### GoogleSheetsConnector
+
+#### `check() -> ConnectionStatus`
+Verifies connection to the spreadsheet.
+
+#### `discover() -> Catalog`
+Discovers available sheets and their schemas.
+
+#### `read(selected_streams, state) -> Iterator[Record | StateMessage]`
+Reads data from selected streams.
+
+#### `read_stream(stream_name) -> Iterator[Dict]`
+Reads data from a specific stream.
+
+#### `sync(selected_streams) -> List[SyncResult]`
+Performs a full sync and returns results.
+
+### Error Handling
+
+The connector provides custom exceptions:
+
+- `GoogleSheetsError`: Base exception
+- `AuthenticationError`: Authentication failures (401, 403)
+- `RateLimitError`: Rate limit exceeded (429)
+- `NotFoundError`: Resource not found (404)
+- `InvalidRequestError`: Invalid request (400)
+- `ServerError`: Server errors (5xx)
+
+## Rate Limits
+
+Google Sheets API limits:
+- **300 requests/minute** per project
+- **60 requests/minute** per user
+
+The connector implements:
+- Sliding window rate limiter (60 req/min)
+- Exponential backoff with jitter
+- Automatic retry on 429 and 5xx errors
 
 ## Known Limitations
 
-1. **Full Refresh Only**: No incremental sync support (Google Sheets doesn't track changes)
-2. **Maximum Cells**: Google Sheets limit of 10 million cells per spreadsheet
-3. **Empty Rows**: Consecutive empty rows may signal end of data
-4. **Merged Cells**: Merged cells may result in None values for non-anchor cells
-5. **Formula Values**: By default, returns computed values, not formulas
-
-## Testing
-
-To test the connector:
-
-```python
-# test_connector.py
-import json
-from src import create_connector
-
-# Load credentials
-with open("service_account.json") as f:
-    creds = json.load(f)
-
-# Create connector
-connector = create_connector({
-    "spreadsheet_id": "your-spreadsheet-id",
-    "credentials": {
-        "auth_type": "service_account",
-        **creds,
-    },
-})
-
-# Test connection
-result = connector.check_connection()
-print(f"Connection: {'OK' if result.success else 'FAILED'}")
-print(f"Details: {result}")
-```
+1. **Full Refresh Only**: Google Sheets doesn't support change tracking
+2. **No Streaming Updates**: Use polling for real-time data
+3. **Large Sheets**: Sheets with >5M cells may timeout; use specific ranges
+4. **Merged Cells**: May cause alignment issues
+5. **Formula Dependencies**: External formula references may fail
 
 ## Dependencies
 
 - `google-api-python-client>=2.100.0`
 - `google-auth>=2.23.0`
-- `google-auth-httplib2>=0.1.1`
 - `google-auth-oauthlib>=1.1.0`
 - `pydantic>=2.5.0`
-- `httplib2>=0.22.0`
-- `requests>=2.31.0`
 
-Install with:
-```bash
-pip install -r requirements.txt
-```
+## License
+
+MIT License

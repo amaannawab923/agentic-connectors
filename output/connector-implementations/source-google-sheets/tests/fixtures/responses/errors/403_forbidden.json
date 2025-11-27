@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 403,
+    "message": "The caller does not have permission to access the spreadsheet. Ensure the spreadsheet is shared with the service account email.",
+    "status": "PERMISSION_DENIED",
+    "errors": [
+      {
+        "message": "The caller does not have permission",
+        "domain": "global",
+        "reason": "forbidden"
+      }
+    ]
+  }
+}

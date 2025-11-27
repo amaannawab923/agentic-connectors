@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 429,
+    "message": "Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user' of service 'sheets.googleapis.com' for consumer 'project_number:123456789'.",
+    "status": "RESOURCE_EXHAUSTED",
+    "errors": [
+      {
+        "message": "Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user' of service 'sheets.googleapis.com' for consumer 'project_number:123456789'.",
+        "domain": "global",
+        "reason": "rateLimitExceeded"
+      }
+    ]
+  }
+}

@@ -1,317 +1,301 @@
-"""Configuration validation tests for Google Sheets connector."""
+"""
+Configuration validation tests for Google Sheets connector.
 
-import sys
-import os
+These tests verify that the Pydantic configuration models work correctly.
+"""
+
+import json
 import pytest
 from pydantic import ValidationError
-
-# Add parent directory to path to import from src package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.config import (
     GoogleSheetsConfig,
     ServiceAccountCredentials,
     OAuth2Credentials,
-    StreamConfig,
-    RateLimitSettings,
-    Catalog,
-    CatalogEntry,
+    APIKeyCredentials,
+    SheetConfig,
+    ConnectionStatus,
+    SyncResult,
 )
 
 
 class TestServiceAccountCredentials:
     """Test ServiceAccountCredentials validation."""
 
-    def test_valid_service_account_credentials(self, valid_private_key):
-        """Test valid service account credentials are accepted."""
+    def test_valid_service_account(self, service_account_fixture):
+        """Test that valid service account credentials are accepted."""
         creds = ServiceAccountCredentials(
-            project_id="test-project",
-            private_key=valid_private_key,
-            client_email="test@test-project.iam.gserviceaccount.com",
+            service_account_info=json.dumps(service_account_fixture)
         )
         assert creds.auth_type == "service_account"
-        assert creds.project_id == "test-project"
+        assert creds.service_account_info is not None
 
-    def test_missing_project_id_raises_error(self, valid_private_key):
-        """Test missing project_id raises validation error."""
+    def test_invalid_json_raises_error(self):
+        """Test that invalid JSON raises a validation error."""
         with pytest.raises(ValidationError) as exc_info:
             ServiceAccountCredentials(
-                private_key=valid_private_key,
-                client_email="test@test-project.iam.gserviceaccount.com",
+                service_account_info="not valid json"
             )
-        assert "project_id" in str(exc_info.value)
+        assert "Invalid JSON" in str(exc_info.value)
 
-    def test_missing_private_key_raises_error(self):
-        """Test missing private_key raises validation error."""
+    def test_missing_required_fields_raises_error(self):
+        """Test that missing required fields raise a validation error."""
+        incomplete_service_account = {
+            "type": "service_account",
+            "project_id": "test-project"
+            # Missing: private_key_id, private_key, client_email, client_id
+        }
         with pytest.raises(ValidationError) as exc_info:
             ServiceAccountCredentials(
-                project_id="test-project",
-                client_email="test@test-project.iam.gserviceaccount.com",
+                service_account_info=json.dumps(incomplete_service_account)
             )
-        assert "private_key" in str(exc_info.value)
+        assert "Missing required fields" in str(exc_info.value)
 
-    def test_missing_client_email_raises_error(self, valid_private_key):
-        """Test missing client_email raises validation error."""
+    def test_wrong_type_raises_error(self):
+        """Test that wrong type value raises a validation error."""
+        wrong_type = {
+            "type": "user_account",  # Should be "service_account"
+            "project_id": "test-project",
+            "private_key_id": "key-id",
+            "private_key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+            "client_email": "test@test.iam.gserviceaccount.com",
+            "client_id": "123456789"
+        }
         with pytest.raises(ValidationError) as exc_info:
             ServiceAccountCredentials(
-                project_id="test-project",
-                private_key=valid_private_key,
+                service_account_info=json.dumps(wrong_type)
             )
-        assert "client_email" in str(exc_info.value)
-
-    def test_invalid_private_key_format(self):
-        """Test invalid private key format raises validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            ServiceAccountCredentials(
-                project_id="test-project",
-                private_key="not-a-valid-key",
-                client_email="test@test-project.iam.gserviceaccount.com",
-            )
-        assert "PEM format" in str(exc_info.value)
-
-    def test_to_google_credentials_dict(self, valid_private_key):
-        """Test conversion to Google credentials dictionary."""
-        creds = ServiceAccountCredentials(
-            project_id="test-project",
-            private_key=valid_private_key,
-            client_email="test@test-project.iam.gserviceaccount.com",
-        )
-        creds_dict = creds.to_google_credentials_dict()
-
-        assert creds_dict["type"] == "service_account"
-        assert creds_dict["project_id"] == "test-project"
-        assert creds_dict["private_key"] == valid_private_key
-        assert creds_dict["client_email"] == "test@test-project.iam.gserviceaccount.com"
+        assert "type 'service_account'" in str(exc_info.value)
 
 
 class TestOAuth2Credentials:
     """Test OAuth2Credentials validation."""
 
-    def test_valid_oauth2_credentials(self):
-        """Test valid OAuth2 credentials are accepted."""
+    def test_valid_oauth2(self, oauth2_fixture):
+        """Test that valid OAuth2 credentials are accepted."""
         creds = OAuth2Credentials(
-            client_id="test-client-id.apps.googleusercontent.com",
-            client_secret="test-client-secret",
-            refresh_token="test-refresh-token",
+            client_id=oauth2_fixture["client_id"],
+            client_secret=oauth2_fixture["client_secret"],
+            refresh_token=oauth2_fixture["refresh_token"]
         )
         assert creds.auth_type == "oauth2"
-        assert creds.client_id == "test-client-id.apps.googleusercontent.com"
+        assert creds.client_id == oauth2_fixture["client_id"]
 
-    def test_missing_client_id_raises_error(self):
-        """Test missing client_id raises validation error."""
+    def test_short_client_id_raises_error(self):
+        """Test that too short client_id raises a validation error."""
         with pytest.raises(ValidationError) as exc_info:
             OAuth2Credentials(
-                client_secret="test-client-secret",
-                refresh_token="test-refresh-token",
+                client_id="short",  # Less than 10 chars
+                client_secret="valid-secret-123456",
+                refresh_token="valid-refresh-token-123456"
             )
-        assert "client_id" in str(exc_info.value)
+        assert "Invalid client_id format" in str(exc_info.value)
 
-    def test_missing_client_secret_raises_error(self):
-        """Test missing client_secret raises validation error."""
+    def test_short_client_secret_raises_error(self):
+        """Test that too short client_secret raises a validation error."""
         with pytest.raises(ValidationError) as exc_info:
             OAuth2Credentials(
-                client_id="test-client-id",
-                refresh_token="test-refresh-token",
+                client_id="valid-client-id-123456",
+                client_secret="short",  # Less than 10 chars
+                refresh_token="valid-refresh-token-123456"
             )
-        assert "client_secret" in str(exc_info.value)
+        assert "Invalid client_secret format" in str(exc_info.value)
 
-    def test_missing_refresh_token_raises_error(self):
-        """Test missing refresh_token raises validation error."""
+
+class TestAPIKeyCredentials:
+    """Test APIKeyCredentials validation."""
+
+    def test_valid_api_key(self, api_key_fixture):
+        """Test that valid API key credentials are accepted."""
+        creds = APIKeyCredentials(
+            api_key=api_key_fixture["api_key"]
+        )
+        assert creds.auth_type == "api_key"
+        assert creds.api_key == api_key_fixture["api_key"]
+
+    def test_short_api_key_raises_error(self):
+        """Test that too short API key raises a validation error."""
         with pytest.raises(ValidationError) as exc_info:
-            OAuth2Credentials(
-                client_id="test-client-id",
-                client_secret="test-client-secret",
+            APIKeyCredentials(
+                api_key="short"  # Less than 20 chars
             )
-        assert "refresh_token" in str(exc_info.value)
+        assert "Invalid API key format" in str(exc_info.value)
 
 
 class TestGoogleSheetsConfig:
     """Test GoogleSheetsConfig validation."""
 
-    def test_valid_config_with_service_account(self, service_account_config):
-        """Test valid configuration with service account credentials."""
-        config = GoogleSheetsConfig(**service_account_config)
+    def test_valid_config_with_service_account(self, valid_service_account_config):
+        """Test that valid config with service account is accepted."""
+        config = GoogleSheetsConfig(**valid_service_account_config)
         assert config.spreadsheet_id == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-        assert isinstance(config.credentials, ServiceAccountCredentials)
+        assert hasattr(config.credentials, 'auth_type')
+        assert config.credentials.auth_type == "service_account"
 
-    def test_valid_config_with_oauth2(self, oauth2_config):
-        """Test valid configuration with OAuth2 credentials."""
-        config = GoogleSheetsConfig(**oauth2_config)
+    def test_valid_config_with_oauth2(self, valid_oauth2_config):
+        """Test that valid config with OAuth2 is accepted."""
+        config = GoogleSheetsConfig(**valid_oauth2_config)
         assert config.spreadsheet_id == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-        assert isinstance(config.credentials, OAuth2Credentials)
+        assert config.credentials.auth_type == "oauth2"
 
-    def test_missing_spreadsheet_id_raises_error(self, valid_private_key):
-        """Test missing spreadsheet_id raises validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            GoogleSheetsConfig(
-                credentials=ServiceAccountCredentials(
-                    project_id="test-project",
-                    private_key=valid_private_key,
-                    client_email="test@test.iam.gserviceaccount.com",
-                )
-            )
-        assert "spreadsheet_id" in str(exc_info.value)
+    def test_valid_config_with_api_key(self, valid_api_key_config):
+        """Test that valid config with API key is accepted."""
+        config = GoogleSheetsConfig(**valid_api_key_config)
+        assert config.spreadsheet_id == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+        assert config.credentials.auth_type == "api_key"
 
-    def test_invalid_spreadsheet_id_format(self, valid_private_key):
-        """Test invalid spreadsheet_id format raises validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            GoogleSheetsConfig(
-                spreadsheet_id="abc",  # Too short
-                credentials=ServiceAccountCredentials(
-                    project_id="test-project",
-                    private_key=valid_private_key,
-                    client_email="test@test.iam.gserviceaccount.com",
-                )
-            )
-        assert "spreadsheet_id" in str(exc_info.value).lower() or "too short" in str(exc_info.value).lower()
-
-    def test_discriminator_works_for_auth_type(self, service_account_config, oauth2_config):
-        """Test that Pydantic discriminator correctly identifies credential type."""
-        # Service account
-        config1 = GoogleSheetsConfig(**service_account_config)
-        assert config1.credentials.auth_type == "service_account"
-
-        # OAuth2
-        config2 = GoogleSheetsConfig(**oauth2_config)
-        assert config2.credentials.auth_type == "oauth2"
-
-    def test_default_rate_limit_settings(self, service_account_config):
-        """Test default rate limit settings are applied."""
-        config = GoogleSheetsConfig(**service_account_config)
-        assert config.rate_limit.requests_per_minute == 60
-        assert config.rate_limit.max_retries == 5
-        assert config.rate_limit.base_delay == 1.0
-        assert config.rate_limit.max_delay == 60.0
-
-    def test_custom_rate_limit_settings(self, service_account_config):
-        """Test custom rate limit settings are accepted."""
-        service_account_config["rate_limit"] = {
-            "requests_per_minute": 100,
-            "max_retries": 3,
-            "base_delay": 2.0,
-            "max_delay": 30.0,
+    def test_spreadsheet_id_from_url(self):
+        """Test that spreadsheet ID can be extracted from URL."""
+        config_dict = {
+            "spreadsheet_id": "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit",
+            "credentials": {
+                "auth_type": "api_key",
+                "api_key": "AIzaSyTest_API_Key_1234567890_abcdefghijklmnop"
+            }
         }
-        config = GoogleSheetsConfig(**service_account_config)
-        assert config.rate_limit.requests_per_minute == 100
-        assert config.rate_limit.max_retries == 3
+        config = GoogleSheetsConfig(**config_dict)
+        assert config.spreadsheet_id == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 
-    def test_invalid_rate_limit_raises_error(self, service_account_config):
-        """Test invalid rate limit settings raise validation error."""
-        service_account_config["rate_limit"] = {
-            "requests_per_minute": 500,  # Over the limit of 300
+    def test_invalid_spreadsheet_id_url_raises_error(self):
+        """Test that invalid URL raises a validation error."""
+        config_dict = {
+            "spreadsheet_id": "https://docs.google.com/invalid/url",
+            "credentials": {
+                "auth_type": "api_key",
+                "api_key": "AIzaSyTest_API_Key_1234567890_abcdefghijklmnop"
+            }
         }
+        with pytest.raises(ValidationError) as exc_info:
+            GoogleSheetsConfig(**config_dict)
+        assert "Could not extract spreadsheet ID" in str(exc_info.value)
+
+    def test_invalid_spreadsheet_id_format_raises_error(self):
+        """Test that invalid spreadsheet ID format raises error."""
+        config_dict = {
+            "spreadsheet_id": "invalid id with spaces!@#",
+            "credentials": {
+                "auth_type": "api_key",
+                "api_key": "AIzaSyTest_API_Key_1234567890_abcdefghijklmnop"
+            }
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            GoogleSheetsConfig(**config_dict)
+        assert "Invalid spreadsheet ID format" in str(exc_info.value)
+
+    def test_batch_size_bounds(self):
+        """Test that batch_size must be within valid range."""
+        base_config = {
+            "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+            "credentials": {
+                "auth_type": "api_key",
+                "api_key": "AIzaSyTest_API_Key_1234567890_abcdefghijklmnop"
+            }
+        }
+
+        # Too small
         with pytest.raises(ValidationError):
-            GoogleSheetsConfig(**service_account_config)
+            GoogleSheetsConfig(**{**base_config, "batch_size": 0})
 
-    def test_from_dict_auto_detects_service_account(self, valid_private_key):
-        """Test from_dict auto-detects service account credentials."""
+        # Too large
+        with pytest.raises(ValidationError):
+            GoogleSheetsConfig(**{**base_config, "batch_size": 1001})
+
+        # Valid range
+        config = GoogleSheetsConfig(**{**base_config, "batch_size": 500})
+        assert config.batch_size == 500
+
+    def test_extra_fields_forbidden(self):
+        """Test that extra fields are not allowed."""
         config_dict = {
             "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
             "credentials": {
-                "project_id": "test-project",
-                "private_key": valid_private_key,
-                "client_email": "test@test.iam.gserviceaccount.com",
-            }
+                "auth_type": "api_key",
+                "api_key": "AIzaSyTest_API_Key_1234567890_abcdefghijklmnop"
+            },
+            "unknown_field": "should not be allowed"
         }
-        config = GoogleSheetsConfig.from_dict(config_dict)
-        assert isinstance(config.credentials, ServiceAccountCredentials)
-
-    def test_from_dict_auto_detects_oauth2(self):
-        """Test from_dict auto-detects OAuth2 credentials."""
-        config_dict = {
-            "spreadsheet_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
-            "credentials": {
-                "client_id": "test-client-id",
-                "client_secret": "test-client-secret",
-                "refresh_token": "test-refresh-token",
-            }
-        }
-        config = GoogleSheetsConfig.from_dict(config_dict)
-        assert isinstance(config.credentials, OAuth2Credentials)
+        with pytest.raises(ValidationError) as exc_info:
+            GoogleSheetsConfig(**config_dict)
+        assert "extra" in str(exc_info.value).lower() or "unknown_field" in str(exc_info.value)
 
 
-class TestStreamConfig:
-    """Test StreamConfig validation."""
+class TestSheetConfig:
+    """Test SheetConfig validation."""
 
-    def test_valid_stream_config(self):
-        """Test valid stream configuration."""
-        stream = StreamConfig(name="Sheet1")
-        assert stream.name == "Sheet1"
-        assert stream.header_row == 1
-        assert stream.batch_size == 1000
-        assert stream.enabled is True
-
-    def test_custom_stream_config(self):
-        """Test custom stream configuration."""
-        stream = StreamConfig(
-            name="Data",
-            header_row=2,
-            batch_size=500,
-            enabled=False,
+    def test_valid_sheet_config(self):
+        """Test that valid sheet config is accepted."""
+        config = SheetConfig(
+            name="Sheet1",
+            range="A1:Z100",
+            headers_row=1,
+            skip_rows=0
         )
-        assert stream.header_row == 2
-        assert stream.batch_size == 500
-        assert stream.enabled is False
+        assert config.name == "Sheet1"
+        assert config.range == "A1:Z100"
 
-    def test_invalid_header_row(self):
-        """Test invalid header row raises error."""
+    def test_headers_row_minimum(self):
+        """Test that headers_row must be >= 1."""
         with pytest.raises(ValidationError):
-            StreamConfig(name="Sheet1", header_row=0)  # Must be >= 1
+            SheetConfig(name="Sheet1", headers_row=0)
 
-    def test_invalid_batch_size(self):
-        """Test invalid batch size raises error."""
+    def test_skip_rows_minimum(self):
+        """Test that skip_rows must be >= 0."""
         with pytest.raises(ValidationError):
-            StreamConfig(name="Sheet1", batch_size=20000)  # Over limit
+            SheetConfig(name="Sheet1", skip_rows=-1)
 
 
-class TestCatalog:
-    """Test Catalog and CatalogEntry."""
+class TestConnectionStatus:
+    """Test ConnectionStatus model."""
 
-    def test_catalog_entry_creation(self):
-        """Test creating a catalog entry."""
-        entry = CatalogEntry(
+    def test_successful_connection(self):
+        """Test ConnectionStatus for successful connection."""
+        status = ConnectionStatus(
+            connected=True,
+            message="Successfully connected",
+            spreadsheet_title="Test Sheet",
+            sheet_count=3
+        )
+        assert status.connected is True
+        assert status.spreadsheet_title == "Test Sheet"
+        assert status.error is None
+
+    def test_failed_connection(self):
+        """Test ConnectionStatus for failed connection."""
+        status = ConnectionStatus(
+            connected=False,
+            message="Connection failed",
+            error="Authentication error"
+        )
+        assert status.connected is False
+        assert status.error == "Authentication error"
+
+
+class TestSyncResult:
+    """Test SyncResult model."""
+
+    def test_successful_sync(self):
+        """Test SyncResult for successful sync."""
+        result = SyncResult(
             stream_name="Sheet1",
-            schema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": ["null", "string"]},
-                    "email": {"type": ["null", "string"]},
-                }
-            }
+            records_count=100,
+            success=True,
+            started_at="2024-01-01T00:00:00Z",
+            completed_at="2024-01-01T00:01:00Z"
         )
-        assert entry.stream_name == "Sheet1"
-        assert entry.supported_sync_modes == ["full_refresh"]
+        assert result.stream_name == "Sheet1"
+        assert result.records_count == 100
+        assert result.success is True
+        assert result.error is None
 
-    def test_catalog_get_stream(self):
-        """Test getting a stream from catalog by name."""
-        entry1 = CatalogEntry(
+    def test_failed_sync(self):
+        """Test SyncResult for failed sync."""
+        result = SyncResult(
             stream_name="Sheet1",
-            schema={"type": "object", "properties": {}}
+            records_count=50,
+            success=False,
+            error="Rate limit exceeded",
+            started_at="2024-01-01T00:00:00Z",
+            completed_at="2024-01-01T00:00:30Z"
         )
-        entry2 = CatalogEntry(
-            stream_name="Sheet2",
-            schema={"type": "object", "properties": {}}
-        )
-        catalog = Catalog(streams=[entry1, entry2])
-
-        found = catalog.get_stream("Sheet1")
-        assert found is not None
-        assert found.stream_name == "Sheet1"
-
-        not_found = catalog.get_stream("NonExistent")
-        assert not_found is None
-
-    def test_catalog_get_stream_names(self):
-        """Test getting all stream names from catalog."""
-        entry1 = CatalogEntry(
-            stream_name="Sheet1",
-            schema={"type": "object", "properties": {}}
-        )
-        entry2 = CatalogEntry(
-            stream_name="Data",
-            schema={"type": "object", "properties": {}}
-        )
-        catalog = Catalog(streams=[entry1, entry2])
-
-        names = catalog.get_stream_names()
-        assert names == ["Sheet1", "Data"]
+        assert result.success is False
+        assert result.error == "Rate limit exceeded"

@@ -1,0 +1,7 @@
+{
+  "range": "Sheet1!1:1",
+  "majorDimension": "ROWS",
+  "values": [
+    ["ID", "Name", "Email", "Phone", "Address", "City", "State", "ZipCode", "Country", "Created At", "Updated At", "Status"]
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "client_id": "123456789012-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com",
+  "client_secret": "GOCSPX-test_client_secret_1234567890",
+  "refresh_token": "1//0test_refresh_token_abcdefghijklmnopqrstuvwxyz1234567890",
+  "access_token": "ya29.test_access_token_abcdefghijklmnopqrstuvwxyz1234567890",
+  "token_expiry": "2024-12-31T23:59:59Z"
+}
