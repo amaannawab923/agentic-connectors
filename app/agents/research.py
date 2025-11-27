@@ -48,20 +48,67 @@ When researching, focus on:
 6. Configuration requirements
 7. Testing strategies
 
+## 🚨 CRITICAL: API Token/Key Format Research
+
+**ALWAYS research the CURRENT token/API key format:**
+
+1. **Search for Recent Changes**:
+   - Query: "{API_NAME} API token format 2024 2025"
+   - Query: "{API_NAME} API key format change"
+   - Query: "{API_NAME} authentication token prefix"
+
+2. **Check Official Changelog**:
+   - Look for API changelog or release notes
+   - Note ANY token format changes in the last 2 years
+   - Document ALL valid token prefixes/formats
+
+3. **Document ALL Valid Formats**:
+   - If tokens changed format (e.g., `secret_` → `ntn_`), document BOTH
+   - Note: "As of [DATE], tokens use format X"
+   - Note: "Legacy tokens use format Y (still supported)"
+   - Example: "Notion tokens: `secret_*` (pre-Sept 2024) and `ntn_*` (Sept 2024+)"
+
+4. **Follow Vendor Guidance**:
+   - If vendor says "treat as opaque string", note that prominently
+   - If vendor says "don't validate format", FLAG THIS for Generator
+   - Example: Notion says "don't use regex to validate tokens"
+
+5. **Required Output in Authentication Section**:
+   ```markdown
+   ### Token Format (CRITICAL)
+
+   **Current Format** (as of YYYY-MM-DD):
+   - Prefix: `xyz_`
+   - Length: ~50 characters
+   - Example: `xyz_1234567890abcdef...`
+
+   **Legacy Formats** (still supported):
+   - Old prefix: `abc_` (deprecated but valid)
+
+   **Validation Guidance**:
+   - ⚠️ [VENDOR SAYS: "Treat as opaque string, don't validate format"]
+   - ✅ Recommended: Only validate minimum length
+   - ❌ Do NOT hardcode prefix validation (format may change)
+   ```
+
+**WHY THIS MATTERS**: API providers frequently change token formats for security reasons.
+Hardcoding format validation breaks when APIs evolve. Your research MUST capture current
+state AND any recent changes.
+
 Provide detailed, actionable information that can be used to implement a production-ready connector.
 Include code examples where relevant.
 
 Output your research as a comprehensive markdown document with these sections:
 1. Executive Summary
 2. API Overview
-3. Authentication Patterns
+3. Authentication Patterns (**MUST include Token Format subsection with recent changes**)
 4. Error Handling
 5. Rate Limiting & Pagination
 6. Configuration Schema
 7. File Structure
 8. Code Samples
 9. Known Issues & Limitations
-10. References"""
+10. References (include changelog URLs)
 
     async def execute(
         self,

@@ -25,6 +25,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from .base import BaseAgent
 from ..models.enums import AgentType, TestStatus
 from ..models.schemas import AgentResult, TestResult
+from .test_validator import TestValidator
 
 logger = logging.getLogger(__name__)
 
@@ -927,6 +928,33 @@ def mock_sheets_api():
             logger.info("=" * 60)
             logger.info("[TESTER] Agent execution completed, parsing results...")
             logger.info(f"[TESTER] Response length: {len(response)} chars")
+
+            # ========== VALIDATION LAYER ==========
+            # Validate that tests can be imported before accepting results
+            logger.info("=" * 60)
+            logger.info("[TESTER] VALIDATING TEST EXECUTION...")
+            logger.info("=" * 60)
+
+            validator = TestValidator(connector_dir)
+            import_ok, import_error = validator.quick_import_check()
+
+            if not import_ok:
+                logger.error(f"[TESTER] ❌ VALIDATION FAILED: Test imports broken!")
+                logger.error(f"[TESTER] Error: {import_error}")
+
+                # Return failure immediately - don't trust test_results.json
+                return AgentResult(
+                    agent=self.agent_type,
+                    success=False,
+                    output=None,
+                    error=f"Test validation failed: {import_error}. "
+                           f"Tests cannot be imported - likely naming mismatch or missing dependencies. "
+                           f"TesterAgent may have hallucinated results.",
+                    duration_seconds=time.time() - start_time,
+                    tokens_used=self.total_tokens_used,
+                )
+
+            logger.info("[TESTER] ✓ Test imports validated successfully")
 
             # Try to read results from file first (most reliable)
             test_result = self._read_results_file(connector_dir)

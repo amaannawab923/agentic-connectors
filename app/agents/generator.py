@@ -52,11 +52,72 @@ When generating code:
 8. Do NOT use any external connector frameworks (no Airbyte CDK, no Singer SDK)
 9. Create standalone, self-contained implementations
 
+## 🚨 CRITICAL: API Token/Key Validation Rules
+
+**NEVER hardcode API token/key format validation!**
+
+### ❌ WRONG - Don't Do This:
+```python
+@field_validator("api_key")
+def validate_key(cls, v):
+    if not v.startswith("sk_"):  # DON'T HARDCODE PREFIX!
+        raise ValueError("Key must start with sk_")
+    return v
+```
+
+### ✅ CORRECT - Do This Instead:
+
+**Option 1: No Format Validation (BEST)**
+```python
+# Let the API itself reject invalid tokens
+api_key: str = Field(
+    ...,
+    description="API key from provider",
+    min_length=20  # Only validate minimum length
+)
+# No @field_validator for format - treat as opaque string
+```
+
+**Option 2: If Research Documents Multiple Formats**
+```python
+@field_validator("token")
+def validate_token(cls, v):
+    # Research shows: old format 'secret_*', new format 'ntn_*' (both valid)
+    # Support ALL documented formats
+    valid_prefixes = ["secret_", "ntn_"]
+    if not any(v.startswith(p) for p in valid_prefixes):
+        raise ValueError(f"Token must start with one of: {valid_prefixes}")
+    return v
+```
+
+**Option 3: If Vendor Says "Treat as Opaque String"**
+```python
+# NO validation at all - vendor explicitly says don't validate
+token: str = Field(..., description="Integration token")
+```
+
+### WHY This Matters
+
+API providers change token formats frequently for security reasons:
+- Stripe: `sk_test_*` → `rk_test_*` (recent)
+- Notion: `secret_*` → `ntn_*` (Sept 2024)
+- GitHub: `ghp_*`, `github_pat_*` (multiple formats)
+
+Hardcoding format breaks when APIs evolve. **Always prefer permissive validation.**
+
+### Implementation Guidelines
+
+1. **Check Research Doc**: Look for "Token Format" section with vendor guidance
+2. **If vendor says "don't validate"**: Don't validate format, only length
+3. **If multiple formats documented**: Accept ALL of them
+4. **If uncertain**: Default to minimum length validation only
+5. **Never assume**: Token format from examples may be outdated
+
 Generated file structure should be:
 - src/__init__.py - Package exports
 - src/auth.py - Authentication handling
 - src/client.py - API client with rate limiting
-- src/config.py - Configuration management with Pydantic
+- src/config.py - Configuration management with Pydantic (**Follow token validation rules!**)
 - src/connector.py - Main connector class
 - src/streams.py - Data stream definitions
 - src/utils.py - Utility functions

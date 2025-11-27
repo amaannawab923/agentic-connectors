@@ -73,6 +73,13 @@ Thumbs.db
 credentials.json
 service-account.json
 config.json
+**/fixtures/auth/*.json
+test_live_connection.py
+publish_to_connectai.py
+publish_to_connectai_auto.py
+simple_git_push.py
+test_new_publisher.py
+mock_agent_test_output.txt
 
 # Jupyter
 .ipynb_checkpoints/
