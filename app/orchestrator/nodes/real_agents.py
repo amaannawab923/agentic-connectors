@@ -824,10 +824,12 @@ async def test_reviewer_node(state: PipelineState) -> Dict[str, Any]:
     # Quick path: tests passed
     if test_output.get("passed", False) or test_output.get("status") == "passed":
         new_logs.append(_log(f"[TEST_REVIEWER] Tests PASSED - routing to reviewer"))
+        new_logs.append(_log(f"[TEST_REVIEWER] Clearing any previous errors (tests now pass)"))
         return {
             "current_phase": PipelinePhase.TEST_REVIEWING.value,
             "test_review_decision": "valid_pass",
             "test_review_feedback": [],
+            "errors": [],  # Clear errors when tests pass
             "logs": new_logs,
         }
 
@@ -899,10 +901,12 @@ async def test_reviewer_node(state: PipelineState) -> Dict[str, Any]:
 
         else:  # valid_pass (shouldn't happen if we got here, but handle it)
             new_logs.append(f"[TEST_REVIEWER] Tests PASSED - routing to Reviewer")
+            new_logs.append(_log(f"[TEST_REVIEWER] Clearing any previous errors (tests now pass)"))
             return {
                 "current_phase": PipelinePhase.TEST_REVIEWING.value,
                 "test_review_decision": "valid_pass",
                 "test_review_feedback": [],
+                "errors": [],  # Clear errors when tests pass
                 "logs": new_logs,
             }
 
