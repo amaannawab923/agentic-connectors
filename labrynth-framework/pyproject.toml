@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Agentic Pipeline Framework - Build and visualize agentic pipelines"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [
     {name = "Labrynth Team"}
 ]

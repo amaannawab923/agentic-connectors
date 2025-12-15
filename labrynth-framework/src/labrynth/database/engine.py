@@ -3,7 +3,7 @@
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -20,7 +20,7 @@ def get_db_path() -> Path:
     return Path.home() / ".labrynth" / "labrynth.db"
 
 
-def get_database_url(db_path: Path | None = None) -> str:
+def get_database_url(db_path: Optional[Path] = None) -> str:
     """Get async SQLite URL."""
     path = db_path or get_db_path()
     return f"sqlite+aiosqlite:///{path}"
@@ -31,7 +31,7 @@ _engine = None
 _session_maker = None
 
 
-def get_engine(db_path: Path | None = None):
+def get_engine(db_path: Optional[Path] = None):
     """Get or create database engine."""
     global _engine
     if _engine is None:
@@ -43,7 +43,7 @@ def get_engine(db_path: Path | None = None):
     return _engine
 
 
-def get_session_maker(db_path: Path | None = None) -> async_sessionmaker[AsyncSession]:
+def get_session_maker(db_path: Optional[Path] = None) -> async_sessionmaker[AsyncSession]:
     """Get session maker."""
     global _session_maker
     if _session_maker is None:
@@ -55,7 +55,7 @@ def get_session_maker(db_path: Path | None = None) -> async_sessionmaker[AsyncSe
     return _session_maker
 
 
-async def init_database(db_path: Path | None = None) -> None:
+async def init_database(db_path: Optional[Path] = None) -> None:
     """Initialize database (create directory and tables)."""
     # Get path
     path = db_path or get_db_path()
@@ -73,7 +73,7 @@ async def init_database(db_path: Path | None = None) -> None:
 
 
 @asynccontextmanager
-async def get_session(db_path: Path | None = None) -> AsyncGenerator[AsyncSession, None]:
+async def get_session(db_path: Optional[Path] = None) -> AsyncGenerator[AsyncSession, None]:
     """Get a database session as async context manager."""
     session_maker = get_session_maker(db_path)
     async with session_maker() as session:
