@@ -1,20 +1,22 @@
 import { Search, Bell, Plus, User } from 'lucide-react';
 import { useState } from 'react';
-import { useTheme } from '../App';
+import { useLocation } from 'react-router-dom';
+import { useTheme, routes } from '../App';
 
-interface HeaderProps {
-  currentPage: string;
-}
-
-export function Header({ currentPage }: HeaderProps) {
+export function Header() {
   const { theme } = useTheme();
+  const location = useLocation();
   const [activeFilter, setActiveFilter] = useState('LAST 7 DAYS');
   const filters = ['TODAY', 'LAST 7 DAYS', 'LAST 30 DAYS'];
 
+  // Get current page name from route
+  const currentRoute = routes.find(r => r.path === location.pathname);
+  const currentPage = currentRoute?.name || 'Dashboard';
+
   return (
     <header className={`${
-      theme === 'dark' 
-        ? 'bg-[#0A1628] border-b border-[rgba(212,175,55,0.15)]' 
+      theme === 'dark'
+        ? 'bg-[#0A1628] border-b border-[rgba(212,175,55,0.15)]'
         : 'bg-white border-b border-[#E5E7EB]'
     } px-6 py-4`}>
       <div className="flex items-center justify-between">
@@ -76,8 +78,8 @@ export function Header({ currentPage }: HeaderProps) {
 
           {/* Notification Bell */}
           <button className={`relative p-2 rounded-lg transition-colors ${
-            theme === 'dark' 
-              ? 'hover:bg-[rgba(212,175,55,0.1)]' 
+            theme === 'dark'
+              ? 'hover:bg-[rgba(212,175,55,0.1)]'
               : 'hover:bg-[#F9FAFB]'
           }`}>
             <Bell className={`w-5 h-5 ${
@@ -94,8 +96,8 @@ export function Header({ currentPage }: HeaderProps) {
 
           {/* User Avatar */}
           <button className={`p-2 rounded-lg transition-colors ${
-            theme === 'dark' 
-              ? 'hover:bg-[rgba(212,175,55,0.1)]' 
+            theme === 'dark'
+              ? 'hover:bg-[rgba(212,175,55,0.1)]'
               : 'hover:bg-[#F9FAFB]'
           }`}>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center text-white text-sm font-medium border-2 border-[rgba(212,175,55,0.3)]">

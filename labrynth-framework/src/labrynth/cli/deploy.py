@@ -71,9 +71,25 @@ async def deploy_agents_to_db(project_path: Path) -> int:
     # Get agents from registry and deploy to database
     agents = get_agents()
     deployed_count = 0
+    removed_count = 0
 
     async with get_session() as session:
         repo = AgentRepository(session)
+
+        # Get current agent names from source
+        current_agent_names = {agent_info.name for agent_info in agents.values()}
+
+        # Get existing agents from database for this project
+        existing_agents = await repo.get_by_project(project_id)
+        existing_agent_names = {agent.name for agent in existing_agents}
+
+        # Find and remove stale agents (in DB but not in source)
+        stale_agent_names = existing_agent_names - current_agent_names
+        for agent in existing_agents:
+            if agent.name in stale_agent_names:
+                await repo.delete(agent.id)
+                removed_count += 1
+                console.print(f"[yellow]Removed stale agent:[/] {agent.name}")
 
         for name, agent_info in agents.items():
             # Compute entrypoint
@@ -114,6 +130,8 @@ async def deploy_agents_to_db(project_path: Path) -> int:
 
     console.print(table)
     console.print(f"\n[bold green]Successfully deployed {deployed_count} agent(s)![/]")
+    if removed_count > 0:
+        console.print(f"[yellow]Removed {removed_count} stale agent(s)[/]")
 
     return deployed_count
 

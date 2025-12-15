@@ -1,23 +1,20 @@
-import { LayoutGrid, GitBranch, Zap, Clock, Bot, GraduationCap, Settings, Sun, Moon } from 'lucide-react';
+import { LayoutGrid, GitBranch, Zap, Clock, Bot, GraduationCap, Settings, Sun, Moon, Workflow } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
 import { useTheme } from '../App';
 import { LabyrinthLogoSimple } from './Logo';
 
-interface SidebarProps {
-  currentPage: string;
-  onNavigate: (page: string) => void;
-}
-
 const navItems = [
-  { name: 'Dashboard', icon: LayoutGrid },
-  { name: 'Pipelines', icon: GitBranch },
-  { name: 'Triggers', icon: Zap },
-  { name: 'Pipeline Runs', icon: Clock },
-  { name: 'Agentic Assets', icon: Bot },
-  { name: 'Training', icon: GraduationCap },
-  { name: 'Settings', icon: Settings },
+  { name: 'Dashboard', path: '/', icon: LayoutGrid },
+  { name: 'Workflows', path: '/workflows', icon: Workflow },
+  { name: 'Pipelines', path: '/pipelines', icon: GitBranch },
+  { name: 'Triggers', path: '/triggers', icon: Zap },
+  { name: 'Pipeline Runs', path: '/runs', icon: Clock },
+  { name: 'Agentic Assets', path: '/agents', icon: Bot },
+  { name: 'Training', path: '/training', icon: GraduationCap },
+  { name: 'Settings', path: '/settings', icon: Settings },
 ];
 
-export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+export function Sidebar() {
   const { theme, setTheme } = useTheme();
 
   return (
@@ -34,7 +31,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         </div>
         <div className={`text-xs ml-9 ${
           theme === 'dark' ? 'text-[#64748B]' : 'text-[#94A3B8]'
-        }`}>v2.0.1</div>
+        }`}>v0.1.0</div>
       </div>
 
       {/* Divider with Greek pattern */}
@@ -44,47 +41,31 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
 
       {/* Navigation Items */}
       <nav className="flex-1 px-4">
+        {/* Dashboard */}
         <div className="space-y-2">
           {navItems.slice(0, 1).map((item) => (
-            <NavItem
-              key={item.name}
-              item={item}
-              isActive={currentPage === item.name}
-              onClick={() => onNavigate(item.name)}
-            />
+            <NavItem key={item.name} item={item} />
           ))}
         </div>
 
+        {/* Build: Workflows, Pipelines, Triggers, Pipeline Runs */}
         <div className="space-y-2 mt-2">
-          {navItems.slice(1, 4).map((item) => (
-            <NavItem
-              key={item.name}
-              item={item}
-              isActive={currentPage === item.name}
-              onClick={() => onNavigate(item.name)}
-            />
+          {navItems.slice(1, 5).map((item) => (
+            <NavItem key={item.name} item={item} />
           ))}
         </div>
 
+        {/* Assets: Agentic Assets, Training */}
         <div className="space-y-2 mt-6">
-          {navItems.slice(4, 6).map((item) => (
-            <NavItem
-              key={item.name}
-              item={item}
-              isActive={currentPage === item.name}
-              onClick={() => onNavigate(item.name)}
-            />
+          {navItems.slice(5, 7).map((item) => (
+            <NavItem key={item.name} item={item} />
           ))}
         </div>
 
+        {/* Settings */}
         <div className="space-y-2 mt-6">
-          {navItems.slice(6).map((item) => (
-            <NavItem
-              key={item.name}
-              item={item}
-              isActive={currentPage === item.name}
-              onClick={() => onNavigate(item.name)}
-            />
+          {navItems.slice(7).map((item) => (
+            <NavItem key={item.name} item={item} />
           ))}
         </div>
       </nav>
@@ -96,16 +77,16 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           <Sun className={`w-4 h-4 ${
             theme === 'light' ? 'text-[#D4AF37]' : 'text-[#64748B]'
           }`} />
-          <div 
+          <div
             className={`relative w-12 h-6 rounded-full cursor-pointer transition-colors ${
               theme === 'dark' ? 'bg-[#2C5F8D]' : 'bg-[#E5E7EB]'
             }`}
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           >
-            <div 
+            <div
               className={`absolute top-1 w-4 h-4 rounded-full transition-transform ${
-                theme === 'dark' 
-                  ? 'translate-x-7 bg-[#D4AF37]' 
+                theme === 'dark'
+                  ? 'translate-x-7 bg-[#D4AF37]'
                   : 'translate-x-1 bg-white'
               }`}
             ></div>
@@ -122,8 +103,8 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
 
         {/* User Profile */}
         <div className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors cursor-pointer ${
-          theme === 'dark' 
-            ? 'hover:bg-[rgba(212,175,55,0.1)]' 
+          theme === 'dark'
+            ? 'hover:bg-[rgba(212,175,55,0.1)]'
             : 'hover:bg-[#F9FAFB]'
         }`}>
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center text-white text-sm font-medium border-2 border-[rgba(212,175,55,0.3)]">
@@ -141,29 +122,26 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   );
 }
 
-function NavItem({ 
-  item, 
-  isActive, 
-  onClick 
-}: { 
-  item: { name: string; icon: any }; 
-  isActive: boolean; 
-  onClick: () => void;
+function NavItem({
+  item,
+}: {
+  item: { name: string; path: string; icon: any };
 }) {
   const { theme } = useTheme();
   const Icon = item.icon;
-  
+
   return (
-    <button
-      onClick={onClick}
-      className={`
+    <NavLink
+      to={item.path}
+      end={item.path === '/'}
+      className={({ isActive }) => `
         w-full flex items-center gap-[14px] h-12 px-4 rounded-lg transition-all duration-150
-        ${isActive 
+        ${isActive
           ? `${
               theme === 'dark'
                 ? 'bg-[rgba(212,175,55,0.15)] text-[#F5F5F0]'
                 : 'bg-[rgba(44,95,141,0.1)] text-[#0F172A]'
-            } border-l-[3px] border-[#D4AF37]` 
+            } border-l-[3px] border-[#D4AF37]`
           : `${
               theme === 'dark'
                 ? 'text-[#94A3B8] hover:bg-[rgba(212,175,55,0.08)]'
@@ -172,15 +150,19 @@ function NavItem({
         }
       `}
     >
-      <Icon 
-        className={`w-[22px] h-[22px] ${
-          isActive 
-            ? 'text-[#D4AF37]' 
-            : theme === 'dark' ? 'text-[#64748B]' : 'text-[#94A3B8]'
-        }`}
-        strokeWidth={2}
-      />
-      <span className="text-sm font-medium">{item.name}</span>
-    </button>
+      {({ isActive }) => (
+        <>
+          <Icon
+            className={`w-[22px] h-[22px] ${
+              isActive
+                ? 'text-[#D4AF37]'
+                : theme === 'dark' ? 'text-[#64748B]' : 'text-[#94A3B8]'
+            }`}
+            strokeWidth={2}
+          />
+          <span className="text-sm font-medium">{item.name}</span>
+        </>
+      )}
+    </NavLink>
   );
 }

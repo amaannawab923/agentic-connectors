@@ -68,9 +68,25 @@ async def auto_deploy_dev_project(project_path: Path) -> int:
     # Get agents from registry and deploy to database
     agents = get_agents()
     deployed_count = 0
+    removed_count = 0
 
     async with get_session() as session:
         repo = AgentRepository(session)
+
+        # Get current agent names from source
+        current_agent_names = {agent_info.name for agent_info in agents.values()}
+
+        # Get existing agents from database for this project
+        existing_agents = await repo.get_by_project(project_id)
+        existing_agent_names = {agent.name for agent in existing_agents}
+
+        # Find and remove stale agents (in DB but not in source)
+        stale_agent_names = existing_agent_names - current_agent_names
+        for agent in existing_agents:
+            if agent.name in stale_agent_names:
+                await repo.delete(agent.id)
+                removed_count += 1
+                print(f"[Dev Mode]   - Removed stale: {agent.name}")
 
         for name, agent_info in agents.items():
             # Compute entrypoint
@@ -99,6 +115,8 @@ async def auto_deploy_dev_project(project_path: Path) -> int:
             print(f"[Dev Mode]   - {agent_info.name}")
 
     print(f"[Dev Mode] Deployed {deployed_count} agent(s)")
+    if removed_count > 0:
+        print(f"[Dev Mode] Removed {removed_count} stale agent(s)")
     return deployed_count
 
 
@@ -138,9 +156,17 @@ def create_app(
 
     app = FastAPI(
         title="Labrynth Server",
-        description="Agentic Pipeline Framework API",
+        description="Agentic Pipeline Framework API - Build and orchestrate AI agent pipelines",
         version=__version__,
         lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+        openapi_tags=[
+            {"name": "health", "description": "Health check endpoints"},
+            {"name": "agents", "description": "Agent management endpoints"},
+            {"name": "ui", "description": "UI configuration endpoints"},
+        ],
     )
 
     # Add CORS middleware for future UI
@@ -159,7 +185,7 @@ def create_app(
     app.include_router(agents.router, prefix="/api", tags=["agents"])
 
     # UI settings endpoint
-    @app.get("/api/ui-settings")
+    @app.get("/api/ui-settings", tags=["ui"])
     def ui_settings():
         """Provide configuration to the UI."""
         return {
