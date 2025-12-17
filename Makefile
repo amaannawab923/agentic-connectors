@@ -1,4 +1,4 @@
-.PHONY: server stop clean test logs help pipeline-diagram orchestrator orchestrator-dev orchestrator-prod labrynth labrynth-custom labrynth-stop
+.PHONY: server stop clean test logs help pipeline-diagram orchestrator orchestrator-dev orchestrator-prod labrynth labrynth-custom labrynth-stop labrynth-clean
 
 # Default ports
 PORT ?= 8001
@@ -20,9 +20,10 @@ help:
 	@echo "    make orchestrator-health - Check orchestrator health"
 	@echo ""
 	@echo "  Labrynth Framework (port 8000):"
-	@echo "    make labrynth         - Start Labrynth server (dev mode, test project)"
+	@echo "    make labrynth         - Start Labrynth server (cleans DB, dev mode)"
 	@echo "    make labrynth-custom PROJECT=/path - Start with custom project"
 	@echo "    make labrynth-stop    - Stop Labrynth server"
+	@echo "    make labrynth-clean   - Clean Labrynth database (~/.labrynth/labrynth.db)"
 	@echo ""
 	@echo "  Testing:"
 	@echo "    make test-research    - Test the research agent API"
@@ -213,8 +214,18 @@ test-notion-save:
 LABRYNTH_PORT ?= 8000
 LABRYNTH_TEST_PROJECT ?= /Users/amaannawab/research/test
 
-# Start Labrynth server in dev mode with test project
+# Clean Labrynth database
+labrynth-clean:
+	@echo "Cleaning Labrynth database..."
+	@rm -f ~/.labrynth/labrynth.db
+	@echo "Database cleared."
+
+# Start Labrynth server in dev mode with test project (cleans DB first)
 labrynth:
+	@echo "Cleaning Labrynth database..."
+	@rm -f ~/.labrynth/labrynth.db
+	@echo "Database cleared."
+	@echo ""
 	@echo "Starting Labrynth server (DEV MODE)..."
 	@echo "Test Project: $(LABRYNTH_TEST_PROJECT)"
 	@echo "Port: $(LABRYNTH_PORT)"

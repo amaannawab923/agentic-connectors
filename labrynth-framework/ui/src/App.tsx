@@ -21,7 +21,7 @@ interface ThemeContextType {
 }
 
 export const ThemeContext = createContext<ThemeContextType>({
-  theme: 'dark',
+  theme: 'light',
   setTheme: () => {},
 });
 
@@ -84,7 +84,7 @@ function AppLayout() {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>('dark');
+  const [theme, setTheme] = useState<Theme>('light');
 
   return (
     <ThemeContext.Provider value={{ theme, setTheme }}>
