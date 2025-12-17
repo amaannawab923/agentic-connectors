@@ -1,0 +1,39 @@
+# Labrynth artifacts
+.labrynth/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# Type checking
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv/
+venv/
+env/
+.python-version
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VCS
+.git/

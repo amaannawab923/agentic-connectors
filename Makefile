@@ -1,4 +1,4 @@
-.PHONY: server stop clean test logs help pipeline-diagram orchestrator orchestrator-dev orchestrator-prod
+.PHONY: server stop clean test logs help pipeline-diagram orchestrator orchestrator-dev orchestrator-prod labrynth labrynth-custom labrynth-stop labrynth-clean
 
 # Default ports
 PORT ?= 8001
@@ -19,8 +19,16 @@ help:
 	@echo "    make orchestrator-stop- Stop the orchestrator"
 	@echo "    make orchestrator-health - Check orchestrator health"
 	@echo ""
+	@echo "  Labrynth Framework (port 8000):"
+	@echo "    make labrynth         - Start Labrynth server (cleans DB, dev mode)"
+	@echo "    make labrynth-custom PROJECT=/path - Start with custom project"
+	@echo "    make labrynth-stop    - Stop Labrynth server"
+	@echo "    make labrynth-clean   - Clean Labrynth database (~/.labrynth/labrynth.db)"
+	@echo ""
 	@echo "  Testing:"
 	@echo "    make test-research    - Test the research agent API"
+	@echo "    make test-notion      - Test Notion connector (uses default credentials)"
+	@echo "    make test-notion-save - Test Notion connector and save output to file"
 	@echo "    make clean            - Clean up Python cache files"
 	@echo "    make pipeline-diagram - Generate PNG diagram of the LangGraph pipeline"
 	@echo ""
@@ -169,3 +177,81 @@ orchestrator-clean:
 	@echo "Removing checkpoint database..."
 	rm -f orchestrator_checkpoints.db
 	@echo "Checkpoints cleared."
+
+# ─────────────────────────────────────────────────────────────
+# Connector Testing Commands
+# ─────────────────────────────────────────────────────────────
+
+# Notion credentials (set via environment variables)
+NOTION_TOKEN ?= $(error NOTION_TOKEN is required - set it via environment variable)
+NOTION_PAGE_ID ?= $(error NOTION_PAGE_ID is required - set it via environment variable)
+
+# Test Notion connector with real credentials
+test-notion:
+	@echo "Testing Notion connector..."
+	@echo "Token: $(NOTION_TOKEN)"
+	@echo "Page ID: $(NOTION_PAGE_ID)"
+	@echo ""
+	NOTION_TOKEN=$(NOTION_TOKEN) NOTION_PAGE_ID=$(NOTION_PAGE_ID) python3 test_notion_connector.py
+
+# Test Notion connector and save output to file
+test-notion-save:
+	@echo "Testing Notion connector (saving output)..."
+	@echo "Token: $(NOTION_TOKEN)"
+	@echo "Page ID: $(NOTION_PAGE_ID)"
+	@echo ""
+	NOTION_TOKEN=$(NOTION_TOKEN) NOTION_PAGE_ID=$(NOTION_PAGE_ID) \
+		python3 test_notion_connector.py > notion_test_results.txt 2>&1
+	@echo ""
+	@echo "✅ Test results saved to: notion_test_results.txt"
+	@echo ""
+	@cat notion_test_results.txt
+
+# ─────────────────────────────────────────────────────────────
+# Labrynth Framework Commands
+# ─────────────────────────────────────────────────────────────
+
+LABRYNTH_PORT ?= 8000
+LABRYNTH_TEST_PROJECT ?= /Users/amaannawab/research/test
+
+# Clean Labrynth database
+labrynth-clean:
+	@echo "Cleaning Labrynth database..."
+	@rm -f ~/.labrynth/labrynth.db
+	@echo "Database cleared."
+
+# Start Labrynth server in dev mode with test project (cleans DB first)
+labrynth:
+	@echo "Cleaning Labrynth database..."
+	@rm -f ~/.labrynth/labrynth.db
+	@echo "Database cleared."
+	@echo ""
+	@echo "Starting Labrynth server (DEV MODE)..."
+	@echo "Test Project: $(LABRYNTH_TEST_PROJECT)"
+	@echo "Port: $(LABRYNTH_PORT)"
+	@echo ""
+	@echo "UI: http://localhost:$(LABRYNTH_PORT)"
+	@echo "API: http://localhost:$(LABRYNTH_PORT)/api"
+	@echo ""
+	cd labrynth-framework && \
+	. venv/bin/activate && \
+	LABRYNTH_DEV_PROJECT=$(LABRYNTH_TEST_PROJECT) labrynth server start
+
+# Start Labrynth with custom test project
+labrynth-custom:
+	@echo "Starting Labrynth server (DEV MODE)..."
+	@echo "Test Project: $(LABRYNTH_TEST_PROJECT)"
+	@echo ""
+	@if [ -z "$(PROJECT)" ]; then \
+		echo "Usage: make labrynth-custom PROJECT=/path/to/project"; \
+		exit 1; \
+	fi
+	cd labrynth-framework && \
+	. venv/bin/activate && \
+	LABRYNTH_DEV_PROJECT=$(PROJECT) labrynth server start
+
+# Stop Labrynth server
+labrynth-stop:
+	@echo "Stopping Labrynth server on port $(LABRYNTH_PORT)..."
+	@-lsof -ti:$(LABRYNTH_PORT) | xargs kill -9 2>/dev/null || true
+	@echo "Labrynth server stopped."

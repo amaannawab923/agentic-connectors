@@ -1,0 +1,14 @@
+# Labrynth Project Configuration
+# https://github.com/your-org/labrynth
+
+name: demo
+version: 0.1.0
+agents:
+  paths:
+  - agents/
+  auto_discover: true
+  watch: true
+server:
+  host: 127.0.0.1
+  port: 8000
+  debug: false
